@@ -19,6 +19,6 @@ export async function GET(req: Request) {
   const cutFrom = new Map((await db.select({ id: schema.rolls.id, s: schema.rolls.serial }).from(schema.rolls).where(inArray(schema.rolls.id, rows.map((x) => x.r.splitFromId).filter(Boolean) as string[]))).map((x) => [x.id, x.s]));
   const pdf = await rollLabelsPdf(rows.map(({ r, f, b }) => ({ serial: r.serial, fabricNo: f.fabricNo ?? "", fabric: f.cwFabricCode ?? f.itemName, colour: f.colour ?? "", batch: b.code, weighedG: r.weighedG,
     cutFrom: r.splitFromId ? cutFrom.get(r.splitFromId) : undefined, invoice: r.invoiceNo, sku: f.sku })),
-    Number(s.labelWidthMm), Number(s.labelHeightMm));
+    Number(s.labelWidthMm), Number(s.labelHeightMm), Number(s.labelDpi) || 203);
   return new Response(new Uint8Array(pdf), { headers: { "Content-Type": "application/pdf", "Content-Disposition": `inline; filename="roll-labels.pdf"` } });
 }

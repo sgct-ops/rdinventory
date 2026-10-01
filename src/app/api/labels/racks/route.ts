@@ -12,6 +12,6 @@ export async function GET(req: Request) {
   const want = q ? q.split(",").map((c) => c.trim().toUpperCase()) : all.map((r) => r.code);
   const codes = all.map((r) => r.code).filter((c) => want.includes(c));
   const s = await getSettings();
-  const pdf = await rackLabelsPdf(codes, Number(s.labelWidthMm), Number(s.labelHeightMm));
+  const pdf = await rackLabelsPdf(codes, Number(s.labelWidthMm), Number(s.labelHeightMm), Number(s.labelDpi) || 203);
   return new Response(new Uint8Array(pdf), { headers: { "Content-Type": "application/pdf", "Content-Disposition": `inline; filename="rack-labels.pdf"` } });
 }

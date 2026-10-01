@@ -18,3 +18,4 @@ _to_delete/
 *.pfx
 *.zip
 .claude/settings.local.json
+test-labels-90x60.pdf

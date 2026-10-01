@@ -206,7 +206,7 @@ export async function saveUserAction(_: unknown, fd: FormData) {
 export async function saveSettingsAction(_: unknown, fd: FormData) {
   return run(async () => {
     const u = await admin();
-    const nums = ["adjLimitKg", "adjLimitPct", "labelWidthMm", "labelHeightMm", "checkTolKg", "checkTolPct", "undoMinutes", "lowStockKg", "rackFullPct", "spotCheckRolls"];
+    const nums = ["adjLimitKg", "adjLimitPct", "labelWidthMm", "labelHeightMm", "labelDpi", "checkTolKg", "checkTolPct", "undoMinutes", "lowStockKg", "rackFullPct", "spotCheckRolls"];
     for (const k of Object.keys(DEFAULT_SETTINGS)) {
       if (k === "formatNotes") continue;
       const v = s(fd.get(k));

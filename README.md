@@ -32,7 +32,7 @@ It is the source of truth for fabric; Carbonwork is the check against it.
 
 ## Floor flows (v2)
 
-**Barcodes.** Roll labels carry `SERIAL|INVOICE|BATCH` in one Code 128 (e.g. `55A-0042|RSWM-0881|B-CT26PO48-55A-01`). Each scan box keeps only the part it needs, so one label works everywhere. Your pre-printed **SKU barcodes** (fabric group + colour) go in Fabric/SKU boxes; a roll label scanned into a fabric box (or an SKU into a roll box) is refused with a message. Test-print a few roll labels: the longer barcode is denser on the 75 mm label.
+**Barcodes.** Roll labels (default 90 × 60 mm) have a big Code 128 of the **serial** — vector bars snapped to the printer's dots (0.5 mm = 4 dots on a 203 dpi TSC), so they print solid and scan easily — plus a small QR with `SERIAL|INVOICE|BATCH` for 2D scanners. The app gets the invoice and batch from the serial. Scan boxes accept either code and keep only the part they need. Print at *Actual size* with the driver set to the sticker size (tips on the Print labels page). Your pre-printed **SKU barcodes** (fabric group + colour) go in Fabric/SKU boxes; a roll label scanned into a fabric box (or an SKU into a roll box) is refused with a message.
 
 **Receiving.**
 - The office loads what each fabric PO brings into **Incoming POs**: manually, by CSV (Zoho / Carbonwork exports), or automatically with `POST /api/sync/pos` + `Authorization: Bearer $PO_API_KEY`.

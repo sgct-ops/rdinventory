@@ -5,8 +5,10 @@ export const DEFAULT_SETTINGS = {
   adjLimitPct: "5",
   /** SMALLER = needs approval above the smaller of the two; LARGER = above the larger */
   adjLimitRule: "SMALLER",
-  labelWidthMm: "75",
-  labelHeightMm: "50",
+  labelWidthMm: "90",
+  labelHeightMm: "60",
+  /** the label printer's resolution: bars are snapped to its dots so none print thinner than a dot (TSC: 203 or 300) */
+  labelDpi: "203",
   orderNumberPattern: "^(#?[A-Za-z0-9-]{3,30}|STOCK)$",
   checkTolKg: "2",
   checkTolPct: "1",

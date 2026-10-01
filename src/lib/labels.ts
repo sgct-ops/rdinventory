@@ -6,54 +6,89 @@ import { rollBarcode } from "./codes";
 
 const MM = 72 / 25.4;
 
-async function code128(text: string) {
-  return bwipjs.toBuffer({ bcid: "code128", text, scale: 3, height: 12, includetext: false });
+type Page = ReturnType<PDFDocument["addPage"]>;
+
+/**
+ * Code 128 drawn as solid black vector bars (no image): thermal printers print it crisply, and nothing depends on
+ * how the driver scales or treats a transparent PNG. Every bar is a whole number of printer dots wide, so a
+ * narrow bar never falls below one dot. Returns the width used.
+ */
+function drawCode128(page: Page, text: string, o: { x: number; y: number; maxW: number; h: number; dpi: number; maxModuleMm?: number; center?: boolean }) {
+  const sbs = (bwipjs.raw({ bcid: "code128", text })[0] as { sbs: number[] }).sbs; // bar, space, bar … widths in modules
+  const modules = sbs.reduce((a, b) => a + b, 0) + 20; // + 10-module quiet zone each side
+  const dot = 72 / o.dpi; // one printer dot in PDF points
+  const maxDots = Math.max(1, Math.floor(((o.maxModuleMm ?? 0.5) * MM) / dot));
+  const dots = Math.max(1, Math.min(maxDots, Math.floor(o.maxW / modules / dot)));
+  const mw = dots * dot, w = modules * mw;
+  let x = (o.center ? o.x + (o.maxW - w) / 2 : o.x) + 10 * mw;
+  sbs.forEach((n, i) => { if (i % 2 === 0) page.drawRectangle({ x, y: o.y, width: n * mw, height: o.h, color: rgb(0, 0, 0) }); x += n * mw; });
+  return { w, moduleMm: mw / MM };
+}
+
+/** QR code as vector squares, each module a whole number of printer dots. */
+function drawQR(page: Page, text: string, o: { x: number; y: number; size: number; dpi: number }) {
+  const q = bwipjs.raw({ bcid: "qrcode", text, eclevel: "M" } as Parameters<typeof bwipjs.raw>[0])[0] as unknown as { pixs: number[]; pixx: number; pixy: number };
+  const dot = 72 / o.dpi, n = q.pixx + 2; // + 1-module margin each side (the label edge adds more)
+  const m = Math.max(1, Math.floor(o.size / n / dot)) * dot;
+  for (let r = 0; r < q.pixy; r++) for (let c = 0; c < q.pixx; c++)
+    if (q.pixs[r * q.pixx + c]) page.drawRectangle({ x: o.x + (c + 1) * m, y: o.y + o.size - (r + 2) * m, width: m, height: m, color: rgb(0, 0, 0) });
+  return n * m;
 }
 
 export type RollLabel = { serial: string; fabricNo: string; fabric: string; colour: string; batch: string; weighedG: number; cutFrom?: string; invoice?: string | null; sku?: string | null };
 
-/** One label per page, sized for the office label printer (Settings → label size).
- * The barcode holds SERIAL|INVOICE|BATCH (see lib/codes.ts) so one scan gives the roll, its invoice and batch. */
-export async function rollLabelsPdf(labels: RollLabel[], widthMm: number, heightMm: number) {
+/**
+ * One label per page, exactly the sticker size (Settings → label size, default 90 × 60 mm).
+ * The big barcode holds just the serial, so the bars can be 0.5 mm wide (4 dots on a 203 dpi TSC) and scan from a distance;
+ * the app looks up the invoice and batch from the serial. The small QR holds SERIAL|INVOICE|BATCH for 2D scanners.
+ */
+export async function rollLabelsPdf(labels: RollLabel[], widthMm: number, heightMm: number, dpi = 203) {
   const pdf = await PDFDocument.create();
   const font = await pdf.embedFont(StandardFonts.Helvetica);
   const bold = await pdf.embedFont(StandardFonts.HelveticaBold);
   const W = widthMm * MM, H = heightMm * MM, pad = 3 * MM;
   for (const l of labels) {
     const page = pdf.addPage([W, H]);
-    const png = await pdf.embedPng(await code128(rollBarcode(l.serial, l.invoice, l.batch)));
-    const bh = H * 0.34;
-    // the long three-part code uses the full label width so the bars stay wide enough to scan
-    const bw = W - 2 * pad;
-    page.drawImage(png, { x: pad, y: H - pad - bh, width: bw, height: bh });
-    const fs = Math.max(6, Math.min(10.5, H / 12));
-    let y = H - pad - bh - fs * 1.35;
+    page.drawRectangle({ x: 0, y: 0, width: W, height: H, color: rgb(1, 1, 1) });
+    const bh = Math.min(22 * MM, H * 0.36);
+    drawCode128(page, l.serial, { x: pad, y: H - pad - bh, maxW: W - 2 * pad, h: bh, dpi, center: true });
+    // serial in big type right under the bars
+    const ss = Math.min(22, H / 9);
+    const sw = bold.widthOfTextAtSize(l.serial, ss);
+    let y = H - pad - bh - ss - 1.5 * MM;
+    page.drawText(l.serial, { x: (W - sw) / 2, y, size: ss, font: bold, color: rgb(0, 0, 0) });
+    // details on the left, QR (full code) on the right
+    const qs = Math.min(y - pad, 20 * MM);
+    const full = rollBarcode(l.serial, l.invoice, l.batch);
+    if (full !== l.serial && qs > 10 * MM) drawQR(page, full, { x: W - pad - qs, y: pad, size: qs, dpi });
+    const textW = W - 2 * pad - (full !== l.serial ? qs + 2 * MM : 0);
+    const fs = Math.max(6.5, Math.min(10, H / 17));
+    y -= fs * 1.6;
     const line = (t: string, f = font, size = fs) => {
+      if (y < pad) return;
       let s = t;
-      while (s.length > 3 && f.widthOfTextAtSize(s, size) > W - 2 * pad) s = s.slice(0, -2);
+      while (s.length > 3 && f.widthOfTextAtSize(s, size) > textW) s = s.slice(0, -2);
       page.drawText(s, { x: pad, y, size, font: f, color: rgb(0, 0, 0) });
-      y -= size * 1.25;
+      y -= size * 1.3;
     };
-    line(l.serial, bold, fs * 1.25);
-    line(`${l.fabricNo} · ${l.fabric} ${l.colour}`.trim(), bold);
-    line(`${fmtKg(l.weighedG, 1)} kg`);
+    line(`${l.fabricNo} · ${l.fabric} ${l.colour}`.trim(), bold, fs * 1.1);
+    line(`${fmtKg(l.weighedG, 1)} kg${l.sku ? ` · ${l.sku}` : ""}`, bold);
+    if (l.invoice) line(`Invoice ${l.invoice}`);
     line(`Batch ${l.batch}${l.cutFrom ? ` · cut from ${l.cutFrom}` : ""}`);
-    if (l.invoice) line(`Invoice ${l.invoice}${l.sku ? ` · ${l.sku}` : ""}`);
   }
   return pdf.save();
 }
 
-export async function rackLabelsPdf(codes: string[], widthMm: number, heightMm: number) {
+export async function rackLabelsPdf(codes: string[], widthMm: number, heightMm: number, dpi = 203) {
   const pdf = await PDFDocument.create();
   const bold = await pdf.embedFont(StandardFonts.HelveticaBold);
   const W = widthMm * MM, H = heightMm * MM, pad = 3 * MM;
   for (const c of codes) {
     const text = `RK-${c}`;
     const page = pdf.addPage([W, H]);
-    const png = await pdf.embedPng(await code128(text));
+    page.drawRectangle({ x: 0, y: 0, width: W, height: H, color: rgb(1, 1, 1) });
     const bh = H * 0.5;
-    const bw = Math.min(W - 2 * pad, (png.width / png.height) * bh);
-    page.drawImage(png, { x: (W - bw) / 2, y: H - pad - bh, width: bw, height: bh });
+    drawCode128(page, text, { x: pad, y: H - pad - bh, maxW: W - 2 * pad, h: bh, dpi, center: true, maxModuleMm: 0.6 });
     const size = Math.min(28, H / 4);
     page.drawText(text, { x: (W - bold.widthOfTextAtSize(text, size)) / 2, y: pad, size, font: bold });
   }
@@ -76,8 +111,7 @@ export async function trorPdf(t: TrorPdf) {
   const text = (s: string, x: number, size = 10, f = font, color = rgb(0, 0, 0)) => page.drawText(s.replace(/[^\x20-\x7e]/g, "-"), { x, y, size, font: f, color });
   text("TRANSFER ORDER", m, 10, bold, rgb(0.4, 0.4, 0.4)); y -= 26;
   text(t.to, m, 26, bold); y -= 8;
-  const png = await pdf.embedPng(await bwipjs.toBuffer({ bcid: "code128", text: t.to, scale: 3, height: 14, includetext: false }));
-  page.drawImage(png, { x: W - m - 220, y: y - 6, width: 220, height: 50 });
+  drawCode128(page, t.to, { x: W - m - 220, y: y - 6, maxW: 220, h: 50, dpi: 300, maxModuleMm: 0.5 });
   y -= 22;
   text(`${t.from}  ->  ${t.to_}`, m, 13, bold); y -= 16;
   text(`Date ${t.date}${t.mo ? `   MO ${t.mo}` : ""}${t.plannedBy ? `   Made by ${t.plannedBy}` : ""}`, m, 9, font, rgb(0.35, 0.35, 0.35)); y -= 14;

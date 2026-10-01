@@ -19,7 +19,7 @@ export default async function Page() {
           <div><label className="label">Needs approval above</label><select name="adjLimitRule" defaultValue={s.adjLimitRule} className="input"><option value="SMALLER">the smaller of the two</option><option value="LARGER">the larger of the two</option></select></div>
         </div>
         <div className="font-semibold">Labels</div>
-        <div className="grid grid-cols-3 gap-3"><F k="labelWidthMm" label="Label width mm" /><F k="labelHeightMm" label="Label height mm" /></div>
+        <div className="grid grid-cols-3 gap-3"><F k="labelWidthMm" label="Label width mm" /><F k="labelHeightMm" label="Label height mm" /><F k="labelDpi" label="Printer dpi (TSC: 203 or 300)" /></div>
         <div className="font-semibold">Consumption</div>
         <F k="orderNumberPattern" label="Order number format (regular expression)" help="Default accepts #1234, internal numbers and STOCK. Shopify only: ^(#\d{3,}|STOCK)$" />
         <F k="undoMinutes" label="Undo allowed within (minutes)" />
