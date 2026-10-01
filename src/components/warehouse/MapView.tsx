@@ -20,7 +20,7 @@ export function MapView({ racks, rolls, out, fullPct, canWork }: { racks: Rack[]
     return m;
   }, [racks, rolls]);
   const onRack = rolls.filter((r) => r.rackId);
-  const unplaced = rolls.filter((r) => !r.rackId);
+  const unplaced = rolls.filter((r) => !r.rackId && r.offRackReason !== "TAKEN_OUT");
   const legend = [...new Map(onRack.map((r) => [`${r.item}|${r.colour}`, r])).values()];
 
   const rackInfo = (r: Rack) => {

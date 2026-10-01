@@ -5,6 +5,7 @@ import { UserError } from "./errors";
 import { lock, writeAudit } from "./tx";
 import { canPostLocation, type CurrentUser } from "./perm";
 import { fmtKg } from "./units";
+import { serialOf } from "./codes";
 
 const { rolls, racks, rackMoves, rackCounts, locations, fabricItems, batches, toLines, transferOrders } = schema;
 type RollRow = typeof rolls.$inferSelect;
@@ -120,6 +121,7 @@ function ensureWarehouseUser(u: CurrentUser) {
 async function placeOnRack(tx: Tx, u: CurrentUser, r: RollRow, rack: typeof racks.$inferSelect, fromLabel: string, note: string, via = "SCAN") {
   await tx.update(rolls).set({
     rackId: rack.id, rackSince: new Date(), lastRackId: null, offRackReason: null, offRackRef: null, offRackAt: null, missingSince: null,
+    takenOutAt: null, takenOutBy: null, takenOutPurpose: null, takenOutFor: null,
   }).where(eq(rolls.id, r.id));
   await logMove(tx, u, r, fromLabel, rack.code, via, null, note);
 }
@@ -129,7 +131,7 @@ export async function putAwayScan(
   u: CurrentUser, input: { rackCode: string | null; serial: string; confirm?: "move" | "putBack" },
 ): Promise<WCard> {
   ensureWarehouseUser(u);
-  const serial = input.serial.trim().toUpperCase();
+  const serial = serialOf(input.serial);
   return db.transaction(async (tx) => {
     await lock(tx);
     const row = await rollFull(tx, serial);
@@ -139,7 +141,8 @@ export async function putAwayScan(
     if (r.status === "FINISHED") return { ...base, kind: "err", msg: "This roll is Finished (0 kg)." };
     if (!canPostLocation(u, r.currentLocationId)) return { ...base, kind: "err", msg: "You may not post for this roll's location." };
 
-    const isReturn = !r.rackId && !!r.lastRackId && r.offRackReason === "RETURNED";
+    if (r.takenOutPurpose === "TROR") return { ...base, kind: "err", msg: `Picked for ${r.takenOutFor}. Remove it from that TROR first (Pick a TROR), then put it back.` };
+    const isReturn = !r.rackId && !!r.lastRackId && (r.offRackReason === "RETURNED" || r.offRackReason === "TAKEN_OUT");
     const since = await usedSince(tx, r.id, r.offRackAt);
     const math = since.g > 0 ? { beforeG: r.remainingG + since.g, minusG: since.g, refs: since.refs, afterG: r.remainingG } : undefined;
 
@@ -152,7 +155,7 @@ export async function putAwayScan(
       if (isReturn) {
         const code = await rackCode(tx, r.lastRackId);
         return { ...base, kind: "return", suggestRack: code ?? undefined, action: "putBack", math,
-          msg: `Back from ${r.offRackRef ?? "a TO"}. It left rack ${code}.`, sub: `Put it back on ${code}, or scan another rack label to place it elsewhere.` };
+          msg: r.takenOutAt ? `Back from ${r.takenOutPurpose === "SAMPLING" ? "sampling" : `production (${r.takenOutFor ?? ""})`}. It left rack ${code}.` : `Back from ${r.offRackRef ?? "a TO"}. It left rack ${code}.`, sub: `Put it back on ${code}, or scan another rack label to place it elsewhere.` };
       }
       throw new UserError("Scan a rack label first (RK-…). A roll coming back can be scanned first.");
     }
@@ -197,7 +200,7 @@ export async function putAwayScan(
 /** Move: rack → rack, no TO. Each roll moves the moment it is scanned. */
 export async function moveScan(u: CurrentUser, input: { from: string; to: string; serial: string }): Promise<WCard> {
   ensureWarehouseUser(u);
-  const serial = input.serial.trim().toUpperCase();
+  const serial = serialOf(input.serial);
   return db.transaction(async (tx) => {
     await lock(tx);
     const from = await rackByCode(tx, input.from);
@@ -234,7 +237,7 @@ export async function startCount(u: CurrentUser, code: string) {
 
 export async function countScan(u: CurrentUser, countId: string, serialRaw: string) {
   ensureWarehouseUser(u);
-  const serial = serialRaw.trim().toUpperCase();
+  const serial = serialOf(serialRaw);
   return db.transaction(async (tx) => {
     await lock(tx);
     const [c] = await tx.select().from(rackCounts).where(eq(rackCounts.id, countId)).for("update");

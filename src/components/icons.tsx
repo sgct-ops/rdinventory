@@ -2,7 +2,7 @@ export type Icon =
   | "home" | "search" | "inbox" | "tag" | "scan" | "rack" | "send" | "scissors" | "move" | "count"
   | "adjust" | "check" | "compare" | "zoho" | "map" | "roll" | "list" | "hash" | "history" | "shield"
   | "fabric" | "pin" | "users" | "cog" | "ruler" | "wrench"
-  | "bell" | "chevL" | "chevR" | "batch" | "doc" | "user" | "clock" | "arrow" | "alert";
+  | "barcode" | "takeout" | "invoice" | "truck" | "repo" | "bell" | "chevL" | "chevR" | "batch" | "doc" | "user" | "clock" | "arrow" | "alert";
 
 
 export const P: Record<Icon, string> = {
@@ -41,6 +41,11 @@ export const P: Record<Icon, string> = {
   clock: "M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18zM12 7v5l3 2",
   arrow: "M5 12h14M13 6l6 6-6 6",
   alert: "M12 3 2 20h20zM12 10v4M12 17h.01",
+  barcode: "M3 5v14M6 5v14M9 5v14M13 5v14M15 5v14M18 5v14M21 5v14",
+  takeout: "M4 4v16M4 8h9M4 16h9M15 12h6M18 9l3 3-3 3",
+  invoice: "M6 3h12v18l-3-2-3 2-3-2-3 2zM9 8h6M9 12h6M9 16h3",
+  truck: "M3 6h11v10H3zM14 9h4l3 3v4h-7M7 19a2 2 0 1 0 0-4 2 2 0 0 0 0 4zM17 19a2 2 0 1 0 0-4 2 2 0 0 0 0 4z",
+  repo: "M4 5h7v6H4zM13 5h7v6h-7zM4 13h7v6H4zM13 13h7v6h-7z",
 };
 
 export function Ico({ name, className = "", size = 18 }: { name: Icon; className?: string; size?: number }) {

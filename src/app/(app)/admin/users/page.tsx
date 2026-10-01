@@ -26,7 +26,13 @@ export default async function Page() {
       </div>
       <div><div className="label">Locations they may post from</div>
         <label className="text-sm flex items-center gap-2 mb-1"><input type="checkbox" name="allLocations" defaultChecked={u?.allLocations} /> All</label>
-        <div className="flex flex-col gap-1 max-h-40 overflow-y-auto">{locs.map((l) => <label key={l.id} className="text-sm flex items-center gap-2"><input type="checkbox" name="locationIds" value={l.id} defaultChecked={!!u && ul.some((x) => x.userId === u.id && x.locationId === l.id)} /> {l.name}</label>)}</div></div>
+        <div className="flex flex-col gap-1 max-h-40 overflow-y-auto">{locs.map((l) => <label key={l.id} className="text-sm flex items-center gap-2"><input type="checkbox" name="locationIds" value={l.id} defaultChecked={!!u && ul.some((x) => x.userId === u.id && x.locationId === l.id)} /> {l.name}</label>)}</div>
+        <div className="label mt-3">Receives fabric only at</div>
+        <select name="receiveLocationId" defaultValue={u?.receiveLocationId ?? ""} className="input">
+          <option value="">Any location they may post from</option>
+          {locs.map((l) => <option key={l.id} value={l.id}>{l.name}</option>)}
+        </select>
+        <div className="text-xs text-muted mt-1">e.g. the Rajdanga login: Rajdanga Storage only. Their Receive screen is locked to it.</div></div>
       <div><div className="label">Style POs (merchandisers)</div>
         <label className="text-sm flex items-center gap-2 mb-1"><input type="checkbox" name="allStylePOs" defaultChecked={u?.allStylePOs} /> All</label>
         <textarea name="stylePOPrefixes" defaultValue={u?.stylePOPrefixes ?? ""} className="input h-24 py-2 mono text-sm" placeholder={"CT26/PO/88, CT26/PO/9"} />

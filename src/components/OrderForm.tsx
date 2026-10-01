@@ -1,9 +1,11 @@
 "use client";
 import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
-import { previewTOAction, postTOAction, saveDraftAction, discardDraftAction, rollInfoAction } from "@/app/actions";
+import { previewTOAction, postTOAction, planTRORAction, saveDraftAction, discardDraftAction, rollInfoAction } from "@/app/actions";
 import type { RowPlan } from "@/lib/posting";
 import { ScanBox, kg, beep } from "./ScanBox";
+import { ScanInput } from "./ScanInput";
+import { RollChip } from "./RollLocator";
 
 type Fab = { id: string; fabricNo: string; sku: string | null; label: string };
 type Loc = { id: string; name: string };
@@ -17,7 +19,7 @@ const hasContent = (r: Row) => !!(r.item.trim() || Number(r.kg) > 0 || Number(r.
 const pcs = (r: Row) => Math.max(0, Math.min(500, parseInt(r.pieces || "0", 10) || 0));
 
 export function OrderForm(p: {
-  kind: "TRANSFER" | "CONSUMPTION"; fabrics: Fab[]; sources: Loc[]; dests: Loc[]; today: string; next: string; draft: Draft | null; defaultDest?: string;
+  kind: "TRANSFER" | "CONSUMPTION"; fabrics: Fab[]; sources: Loc[]; dests: Loc[]; today: string; next: string; draft: Draft | null; defaultDest?: string; canPick?: boolean;
 }) {
   const C = p.kind === "CONSUMPTION";
   const empty: Draft = {
@@ -30,6 +32,7 @@ export function OrderForm(p: {
   const [err, setErr] = useState<string[]>([]);
   const [done, setDone] = useState<Done | null>(null);
   const [scanMsg, setScanMsg] = useState<string | null>(null);
+  const [planned, setPlanned] = useState<{ id: string; to: string } | null>(null);
   const h = d.head;
   const setH = (x: Partial<Head>) => setD((o) => ({ ...o, head: { ...o.head, ...x } }));
   const setRow = (i: number, x: Partial<Row>) => setD((o) => ({ ...o, rows: o.rows.map((r, j) => (j === i ? { ...r, ...x } : r)) }));
@@ -83,6 +86,15 @@ export function OrderForm(p: {
     }).filter(Boolean);
     if (local.length) { setErr([`Fix ${local.join("; ")}.`]); beep(false); return; }
     setBusy(true); setErr([]);
+    if (!C) {
+      const pr = await planTRORAction({ ...input, lines: input.lines.map((l) => ({ item: l.item, kg: l.kg })) });
+      setBusy(false);
+      if (!pr.ok) { setErr([pr.error]); beep(false); return; }
+      if (!pr.data!.ok) { setErr(pr.data!.errors); beep(false); return; }
+      beep(true); setPlanned({ id: pr.data!.id, to: pr.data!.to }); first.current = true;
+      setD({ ...empty, head: { ...empty.head, src: h.src, dst: h.dst, date: h.date } });
+      return;
+    }
     const r = await postTOAction(input);
     setBusy(false);
     if (!r.ok) { setErr([r.error]); beep(false); return; }
@@ -94,6 +106,21 @@ export function OrderForm(p: {
   }
 
   if (done) return <DoneView d={done} C={C} onAgain={() => setDone(null)} />;
+  if (planned) return (
+    <div className="p-4 lg:p-7 flex flex-col gap-4 max-w-3xl mx-auto">
+      <div className="card border-ok bg-okbg p-5">
+        <div className="kicker text-ok">TROR CREATED · WAITING FOR THE WAREHOUSE</div>
+        <div className="mono text-3xl font-semibold mt-1">{planned.to}</div>
+        <div className="text-sm mt-2">Send the PDF to the warehouse. They scan its barcode on <b>Pick a TROR</b>, scan each roll as it comes off the rack (any batch of the right fabric), and press Dispatch. Stock moves then — nobody posts it twice.</div>
+      </div>
+      <div className="flex gap-2 flex-wrap">
+        <a className="btn" href={`/api/to/${planned.id}/pdf`} target="_blank" rel="noreferrer">Open the PDF</a>
+        {p.canPick && <Link className="btn-ghost" href={`/to/pick/${planned.id}`}>Pick it now</Link>}
+        <Link className="btn-ghost" href="/to/pick">Open TRORs</Link>
+        <button className="btn-ghost" onClick={() => setPlanned(null)}>New TROR</button>
+      </div>
+    </div>
+  );
 
   const totals = d.rows.reduce((a, r, i) => { const pl = byRow(i); return { kg: a.kg + (pl?.needG ?? 0), waste: a.waste + (C ? pl?.wasteG ?? 0 : 0), pieces: a.pieces + (C ? pcs(r) : 0), items: a.items + (r.item ? 1 : 0) }; }, { kg: 0, waste: 0, pieces: 0, items: 0 });
   const src = p.sources.find((l) => l.id === h.src), dst = p.dests.find((l) => l.id === h.dst);
@@ -109,9 +136,9 @@ export function OrderForm(p: {
           <div className="flex-1 min-w-[260px]">
             <span className={`pill font-semibold ${C ? "bg-warnbg text-amber-800" : "bg-okbg text-ok"}`}>{C ? "TROC · CONSUMPTION" : "TROR · TRANSFER OF ROLLS"}</span>
             <div className="h1 mt-2">{C ? "New consumption order" : "New transfer order"}</div>
-            <div className="sub max-w-xl">{C ? "Fabric used for a style order. Post it once the fabric has been cut." : "Fabric moved between locations. Post it once the rolls have arrived."}</div>
+            <div className="sub max-w-xl">{C ? "Fabric used for a style order. Post it once the fabric has been cut." : "Make the TROR here and send the PDF. The warehouse scans the rolls against it and dispatches — stock moves then, once."}</div>
           </div>
-          <div className="text-right"><div className="kicker">ORDER #</div><div className="mono text-2xl font-semibold">{plan?.next ?? p.next}</div><div className="text-xs text-muted">next free number · fixed on post</div></div>
+          <div className="text-right"><div className="kicker">ORDER #</div><div className="mono text-2xl font-semibold">{plan?.next ?? p.next}</div><div className="text-xs text-muted">next free number · {C ? "fixed on post" : "given when you create it"}</div></div>
         </div>
 
         <section className="card p-5">
@@ -140,11 +167,11 @@ export function OrderForm(p: {
         <section className="card p-5 flex flex-col gap-3">
           <div className="flex items-center gap-3 flex-wrap">
             <div className="font-semibold"><span className="step">3</span>Items</div>
-            <div className="text-xs text-muted flex-1">{d.scan ? "Scan the rolls that actually went. They are grouped by fabric." : C ? "Type a Fabric # or SKU. Kg is taken from the oldest rolls first. Pieces are optional, per row." : "Type a Fabric # or SKU. Whole rolls move first, oldest first; if the kg ends inside a roll, it is cut."}</div>
-            <div className="flex bg-[#e7e4dd] rounded-lg p-[3px] text-[13px]">
+            <div className="text-xs text-muted flex-1">{d.scan ? "Scan the rolls that actually went. They are grouped by fabric." : C ? "Type a Fabric # or SKU. Kg is taken from the oldest rolls first. Pieces are optional, per row." : "Scan the SKU barcode or type the Fabric #, and the kg. The warehouse may send any batch of that fabric; the oldest rolls are suggested."}</div>
+            {C && <div className="flex bg-[#e7e4dd] rounded-lg p-[3px] text-[13px]">
               <button onClick={() => setD((o) => ({ ...o, scan: false, rows: o.rows.map((r) => ({ ...r, serials: [] })) }))} className={`px-3 py-1.5 rounded-md ${!d.scan ? "bg-white font-semibold" : ""}`}>Oldest first</button>
               <button onClick={() => setD((o) => ({ ...o, scan: true }))} className={`px-3 py-1.5 rounded-md ${d.scan ? "bg-white font-semibold" : ""}`}>Scan rolls</button>
-            </div>
+            </div>}
           </div>
           {d.scan && <>
             <ScanBox onScan={onScan} keepFocus={false} placeholder={src ? `Scan rolls from ${src.name}…` : "Pick the source first, then scan…"} disabled={!h.src} />
@@ -161,7 +188,7 @@ export function OrderForm(p: {
                   <div className={`grid gap-3 items-start ${C ? "grid-cols-[28px_minmax(0,1.3fr)_minmax(0,1.2fr)_100px_90px_80px_28px]" : "grid-cols-[28px_minmax(0,1.4fr)_minmax(0,1.4fr)_150px_28px]"} max-md:grid-cols-2`}>
                     <div className="w-7 h-7 rounded-lg bg-chip text-muted text-xs font-bold grid place-items-center mt-1.5 max-md:hidden">{i + 1}</div>
                     <div className="max-md:col-span-2">
-                      <input className="input" list="fablist" placeholder="Fabric # or SKU" value={r.item} onChange={(e) => setRow(i, { item: e.target.value, serials: [] })} />
+                      <ScanInput want="sku" list="fablist" placeholder="Scan SKU or type Fabric #" value={r.item} onChange={(v) => setRow(i, { item: v, serials: [] })} ariaLabel={`Item ${i + 1}`} />
                       <div className={`text-xs mt-1 ${pl?.fabric || !r.item ? "text-muted" : "text-bad"}`}>{!r.item ? "" : pl?.fabric ? `${pl.fabric.label}${pl.fabric.sku ? "  ·  " + pl.fabric.sku : ""}` : "Not in Fabric Inventory"}</div>
                     </div>
                     <div className="flex flex-wrap gap-1.5 max-md:col-span-2">
@@ -185,11 +212,11 @@ export function OrderForm(p: {
                   {pl?.error && <div className="text-sm text-bad md:pl-10">{pl.error}</div>}
                   {pl && !pl.error && pl.takes.length > 0 && (
                     <div className="md:pl-10">
-                      <div className="kicker mb-1">PICK LIST</div>
+                      <div className="kicker mb-1">{C ? "PICK LIST" : "SUGGESTED ROLLS · OLDEST FIRST · CLICK TO SEE WHERE"}</div>
                       <div className="flex flex-wrap gap-1.5">{pl.takes.map((t) => (
-                        <span key={t.serial} className={`pill ${t.cut ? "bg-warnbg" : "bg-paper"} text-[12px]`}>
+                        <RollChip key={t.serial} serial={t.serial} className={t.cut ? "bg-warnbg" : ""}>
                           <b className="mono">{t.serial}</b>{t.rack ? <> · <span className="mono">{t.rack}</span></> : ""} · {kg(t.kgG + t.wasteG, 2)} kg{t.cut ? ` · cut, ${kg(t.rollLeftG, 2)} kg stays` : !C ? " · whole roll" : t.rollLeftG > 5 ? ` · ${kg(t.rollLeftG, 2)} kg left` : " · finishes the roll"}
-                        </span>))}</div>
+                        </RollChip>))}</div>
                     </div>
                   )}
                   {C && n > 0 && (
@@ -225,7 +252,7 @@ export function OrderForm(p: {
             : plan && plan.errors.length > 0 && d.rows.some(hasContent) ? <div className="text-xs text-muted">Still to fix: {plan.errors.slice(0, 3).join(" · ")}</div> : null}
         </div>
         <button className="btn-ghost" onClick={async () => { if (!confirm("Clear this form?")) return; await discardDraftAction(p.kind); first.current = true; setD(empty); }}>Clear</button>
-        <button className="btn h-12 px-6 text-base" disabled={busy} onClick={post}>{busy ? "Posting…" : C ? "Post consumption" : "Post transfer"}</button>
+        <button className="btn h-12 px-6 text-base" disabled={busy} onClick={post}>{busy ? (C ? "Posting…" : "Creating…") : C ? "Post consumption" : "Create TROR"}</button>
       </div>
     </div>
   );

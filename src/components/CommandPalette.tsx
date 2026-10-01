@@ -11,7 +11,7 @@ import type { Role } from "@/lib/perm";
  * A preview of the highlighted result shows on the right. Recent picks are remembered on this computer.
  */
 export type PaletteAction = { href: string; label: string; icon: Icon; code?: string; hint?: string; section: string };
-type Kind = "fabric" | "roll" | "rack" | "to" | "order" | "po" | "style" | "batch" | "location" | "adjustment";
+type Kind = "fabric" | "roll" | "rack" | "to" | "order" | "po" | "style" | "batch" | "location" | "adjustment" | "invoice";
 type Hit = { kind: Kind | "page"; id: string; title: string; subtitle?: string; meta?: string; href: string; icon?: Icon;
   badge?: { text: string; tone: "ok" | "warn" | "bad" | "muted" | "info" }; detail?: [string, string][]; exact?: boolean };
 type Result = { q: string; scope: string; filters: string[]; groups: { kind: Kind; label: string; hits: Hit[]; more: boolean }[]; exact?: Hit; ms: number };
@@ -20,9 +20,9 @@ const SCOPES: { k: "all" | "page" | Kind; label: string; prefix?: string }[] = [
   { k: "all", label: "All" }, { k: "page", label: "Pages" }, { k: "roll", label: "Rolls", prefix: "roll:" }, { k: "fabric", label: "Fabrics", prefix: "fab:" },
   { k: "to", label: "TOs", prefix: "to:" }, { k: "rack", label: "Racks", prefix: "rack:" }, { k: "order", label: "Orders", prefix: "order:" },
   { k: "po", label: "Fabric POs", prefix: "po:" }, { k: "style", label: "Style POs", prefix: "style:" }, { k: "batch", label: "Batches", prefix: "batch:" },
-  { k: "location", label: "Locations", prefix: "loc:" },
+  { k: "invoice", label: "Invoices", prefix: "inv:" }, { k: "location", label: "Locations", prefix: "loc:" },
 ];
-const KIND_ICON: Record<Kind, Icon> = { fabric: "fabric", roll: "roll", rack: "rack", to: "list", order: "hash", po: "doc", style: "scissors", batch: "batch", location: "pin", adjustment: "adjust" };
+const KIND_ICON: Record<Kind, Icon> = { fabric: "fabric", roll: "roll", rack: "rack", to: "list", order: "hash", po: "doc", style: "scissors", batch: "batch", location: "pin", adjustment: "adjust", invoice: "invoice" };
 const TONE: Record<string, string> = { ok: "bg-okbg text-[oklch(0.42_0.1_150)]", warn: "bg-warnbg text-[oklch(0.45_0.1_70)]", bad: "bg-badbg text-bad", muted: "bg-chip text-muted", info: "bg-[#eaf1fb] text-[#2459a8]" };
 // words people use for each page
 const SYN: Record<string, string> = {
@@ -32,7 +32,8 @@ const SYN: Record<string, string> = {
   "/adjustments/new": "adjust correct damage lost found weight", "/adjustments": "approve approval pending", "/check": "carbonwork spot check compare reconcile",
   "/zoho": "zoho prompt claude", "/warehouse": "map racks 3d", "/rolls": "rolls register list stock", "/log": "log tos history tror troc",
   "/orders": "customer order pieces", "/warehouse/log": "movement history", "/warehouse/counts": "counts history", "/audit": "audit who changed",
-  "/": "home dashboard kpi overview", "/admin/fabrics": "fabric items masters sku", "/admin/users": "users access roles permissions", "/admin/tools": "demo backup rebuild",
+  "/": "home dashboard kpi overview", "/pos": "incoming purchase orders po zoho carbonwork expected", "/warehouse/takeout": "take out production sampling cutting fifo",
+  "/to/pick": "pick dispatch tror warehouse send", "/invoices": "invoice vendor bill", "/admin/fabric-groups": "repository fabric group colour numbering sku rib", "/admin/fabrics": "fabric items masters sku", "/admin/users": "users access roles permissions", "/admin/tools": "demo backup rebuild",
 };
 const RECENT = "find-recent-v1";
 /** the search text without prefixes/filters, the way the server reports it back */

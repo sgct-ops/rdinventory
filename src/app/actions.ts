@@ -9,6 +9,10 @@ import * as W from "@/lib/warehouse";
 import * as C from "@/lib/check";
 import * as D from "@/lib/demo";
 import { toG } from "@/lib/units";
+import * as PO from "@/lib/purchasing";
+import * as FL from "@/lib/floor";
+import * as FB from "@/lib/fabrics";
+import { serialOf } from "@/lib/codes";
 
 const rv = (...paths: string[]) => { for (const p of paths) revalidatePath(p); revalidatePath("/", "layout"); };
 
@@ -34,7 +38,7 @@ export async function activateLabelsAction(serials: string[]) {
 // ---------------- TROR / TROC
 export async function previewTOAction(input: P.TOInput) {
   return run(async () => {
-    const u = await actionUser(input.type === "CONSUMPTION" ? ["ADMIN", "MERCHANDISER"] : ["ADMIN", "INVENTORY"]);
+    const u = await actionUser(input.type === "CONSUMPTION" ? ["ADMIN", "MERCHANDISER"] : ["ADMIN", "INVENTORY", "MERCHANDISER"]);
     return P.previewTO(u, input);
   });
 }
@@ -57,13 +61,17 @@ export async function reverseTOAction(toNumber: string, reason: string) {
 export async function setZohoAction(toId: string, value: boolean) {
   return run(async () => { const u = await actionUser(["ADMIN", "INVENTORY", "MERCHANDISER"]); await P.setEnteredInZoho(u, toId, value); rv("/log"); });
 }
-export async function rollInfoAction(serial: string) {
+export async function rollInfoAction(code: string) {
   return run(async () => {
     await actionUser();
-    const [r] = await db.select({ serial: schema.rolls.serial, fabricNo: schema.fabricItems.fabricNo, remainingG: schema.rolls.remainingG, status: schema.rolls.status, loc: schema.rolls.currentLocationId })
-      .from(schema.rolls).innerJoin(schema.fabricItems, eq(schema.fabricItems.id, schema.rolls.fabricItemId)).where(eq(schema.rolls.serial, serial.trim().toUpperCase()));
+    const serial = serialOf(code);
+    const [r] = await db.select({ serial: schema.rolls.serial, fabricNo: schema.fabricItems.fabricNo, sku: schema.fabricItems.sku, item: schema.fabricItems.itemName, colour: schema.fabricItems.colour,
+      remainingG: schema.rolls.remainingG, status: schema.rolls.status, loc: schema.rolls.currentLocationId, invoice: schema.rolls.invoiceNo, batch: schema.batches.code,
+      takenOutAt: schema.rolls.takenOutAt, takenOutFor: schema.rolls.takenOutFor, takenOutPurpose: schema.rolls.takenOutPurpose })
+      .from(schema.rolls).innerJoin(schema.fabricItems, eq(schema.fabricItems.id, schema.rolls.fabricItemId)).innerJoin(schema.batches, eq(schema.batches.id, schema.rolls.batchId))
+      .where(eq(schema.rolls.serial, serial));
     if (!r) throw new UserError(`${serial}: no roll with this serial.`);
-    return r;
+    return { ...r, takenOutAt: r.takenOutAt?.toISOString() ?? null };
   });
 }
 export async function zohoPromptAction(input: string) {
@@ -176,4 +184,63 @@ export async function loadDemoAction() {
 }
 export async function removeDemoAction() {
   return run(async () => { const u = await actionUser(["ADMIN"]); await D.removeDemo(u); rv("/"); });
+}
+
+// ---------------- incoming POs
+export async function poSummaryAction(po: string) {
+  return run(async () => { await actionUser(); return PO.poSummary(po); });
+}
+export async function savePOAction(input: PO.POInput) {
+  return run(async () => { const u = await actionUser(["ADMIN", "INVENTORY"]); const r = await PO.savePO(u, input); rv("/pos"); return r; });
+}
+export async function importPOsAction(text: string, source: string) {
+  return run(async () => { const u = await actionUser(["ADMIN", "INVENTORY"]); const r = await PO.importPOsCsv(u, text, source || "CSV"); rv("/pos"); return r; });
+}
+export async function setPOStatusAction(id: string, status: "OPEN" | "CLOSED") {
+  return run(async () => { const u = await actionUser(["ADMIN", "INVENTORY"]); await PO.setPOStatus(u, id, status); rv("/pos"); });
+}
+
+// ---------------- floor: FIFO, locator, take out
+export async function fifoAction(fabric: string, locationId?: string) {
+  return run(async () => { await actionUser(); return FL.fifoRolls(fabric, locationId); });
+}
+export async function locateAction(code: string) {
+  return run(async () => { await actionUser(); const r = await FL.locateRoll(code); if (!r) throw new UserError("No roll with this serial."); return r; });
+}
+export async function takeOutAction(p: { code: string; purpose: string; forPO?: string; fabric?: string; confirmNotOldest?: boolean }) {
+  return run(async () => { const u = await actionUser(["ADMIN", "INVENTORY"]); const r = await FL.takeOut(u, p); if (r.kind === "ok") rv("/warehouse", "/warehouse/takeout"); return r; });
+}
+
+// ---------------- planned TROR → pick → dispatch
+export async function planTRORAction(input: P.TOInput) {
+  return run(async () => { const u = await actionUser(["ADMIN", "INVENTORY", "MERCHANDISER"]); const r = await FL.planTROR(u, input); if (r.ok) rv("/to/pick"); return r; });
+}
+export async function trorViewAction(idOrNumber: string) {
+  return run(async () => { await actionUser(); const v = await FL.trorView(idOrNumber); if (!v) throw new UserError(`No transfer order ${idOrNumber.toUpperCase()}.`); return v; });
+}
+export async function pickAction(toId: string, code: string, opt: { cutKg?: string; whole?: boolean } = {}) {
+  return run(async () => { const u = await actionUser(["ADMIN", "INVENTORY"]); return FL.pickForTROR(u, toId, code, opt); });
+}
+export async function unpickAction(toId: string, code: string) {
+  return run(async () => { const u = await actionUser(["ADMIN", "INVENTORY"]); await FL.unpickForTROR(u, toId, code); });
+}
+export async function dispatchAction(toId: string, opt: { shortReason?: string } = {}) {
+  return run(async () => { const u = await actionUser(["ADMIN", "INVENTORY"]); const r = await FL.dispatchTROR(u, toId, opt); if (r.ok) rv("/log", "/warehouse", "/to/pick", "/labels"); return r; });
+}
+export async function cancelTRORAction(toId: string, reason: string) {
+  return run(async () => { const u = await actionUser(["ADMIN", "INVENTORY", "MERCHANDISER"]); await FL.cancelTROR(u, toId, reason); rv("/to/pick"); });
+}
+
+// ---------------- fabric repository
+export async function suggestFabricAction(groupId: string, colour: string) {
+  return run(async () => { await actionUser(["ADMIN"]); return FB.suggestFor(groupId, colour); });
+}
+export async function saveGroupAction(p: FB.GroupInput) {
+  return run(async () => { const u = await actionUser(["ADMIN"]); const g = await FB.saveGroup(u, p); rv("/admin/fabric-groups"); return { id: g.id }; });
+}
+export async function addColourAction(p: FB.ColourInput) {
+  return run(async () => { const u = await actionUser(["ADMIN"]); const it = await FB.addColour(u, p); rv("/admin/fabric-groups", "/admin/fabrics"); return { fabricNo: it.fabricNo, sku: it.sku }; });
+}
+export async function buildGroupsAction() {
+  return run(async () => { const u = await actionUser(["ADMIN"]); const r = await FB.buildGroupsFromItems(u); rv("/admin/fabric-groups"); return r; });
 }

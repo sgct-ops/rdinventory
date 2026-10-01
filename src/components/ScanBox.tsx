@@ -1,5 +1,6 @@
 "use client";
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "react";
+import { serialOf } from "@/lib/codes";
 
 export type ScanBoxHandle = { focus: () => void };
 
@@ -34,11 +35,11 @@ export const ScanBox = forwardRef<ScanBoxHandle, {
         onKeyDown={async (e) => {
           if (e.key !== "Enter") return;
           e.preventDefault();
-          const code = v.trim();
+          const code = (e.currentTarget.value || v).trim(); // the live value: a fast scanner can press Enter before React re-renders
           if (!code || busy) return;
           setV("");
           setBusy(true);
-          try { await onScan(code.toUpperCase()); } finally { setBusy(false); input.current?.focus(); }
+          try { await onScan(code.includes("|") ? serialOf(code) : code.toUpperCase()); } finally { setBusy(false); input.current?.focus(); }
         }} />
       <div className={`mono text-[11px] font-medium whitespace-nowrap ${busy ? "text-accent" : "text-ok"}`}>{busy ? "● CHECKING" : "● SCANNER"}</div>
     </div>

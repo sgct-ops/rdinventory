@@ -1,4 +1,5 @@
 "use client";
+import { ScanInput } from "./ScanInput";
 import { useState } from "react";
 import { requestAdjustmentAction } from "@/app/actions";
 
@@ -20,7 +21,7 @@ export function AdjustForm({ reasons, initialSerial, limitText }: { reasons: [st
   }
   return (
     <div className="card p-5 grid grid-cols-1 md:grid-cols-2 gap-4 max-w-3xl">
-      <div><label className="label">Roll serial (scan) *</label><input autoFocus className="input mono uppercase h-12" value={serial} onChange={(e) => setSerial(e.target.value)} /></div>
+      <div><label className="label">Roll serial * <span className="text-muted font-normal">— scan the roll label</span></label><ScanInput autoFocus want="serial" mono className="h-12" value={serial} onChange={setSerial} /></div>
       <div><label className="label">Kg change * (+ adds, − removes)</label><input className="input h-12 text-lg" inputMode="decimal" placeholder="-1.25" value={kgChange} onChange={(e) => setKg(e.target.value)} /></div>
       <div><label className="label">Reason *</label><select className="input" value={reason} onChange={(e) => setReason(e.target.value)}><option value="">Pick…</option>{reasons.map(([k, v]) => <option key={k} value={k}>{v}</option>)}</select></div>
       <div><label className="label">Photo link (optional)</label><input className="input" value={photoUrl} onChange={(e) => setPhoto(e.target.value)} /></div>

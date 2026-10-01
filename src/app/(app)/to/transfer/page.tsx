@@ -5,7 +5,7 @@ import { todayIST } from "@/lib/units";
 import { OrderForm } from "@/components/OrderForm";
 
 export default async function Page() {
-  const u = await pageUser(NAV_ROLES.transfer);
+  const u = await pageUser(NAV_ROLES.planTransfer);
   const all = await activeLocations();
   const mine = await allowedLocations(u);
   const sources = mine.filter((l) => l.type !== "PRODUCTION").map((l) => ({ id: l.id, name: l.name }));
@@ -14,5 +14,5 @@ export default async function Page() {
   if (!sources.length) return <div className="p-8">No locations are assigned to you yet. Ask the admin to set your locations in Users.</div>;
   const [fabrics, draft, next] = await Promise.all([fabricOptions(), getDraft(u, "TRANSFER"), peekNextTO("TRANSFER")]);
   return <OrderForm kind="TRANSFER" fabrics={fabrics} sources={sources} dests={dests} today={todayIST()} next={next} draft={draft as never}
-    defaultDest={("TRANSFER" as string) === "CONSUMPTION" && prod.length === 1 ? prod[0].id : undefined} />;
+    defaultDest={undefined} canPick={NAV_ROLES.pick.includes(u.role)} />;
 }

@@ -16,6 +16,12 @@ export const DEFAULT_SETTINGS = {
   spotCheckRolls: "5",
   /** JSON: your notes per field on the Formats page */
   formatNotes: "{}",
+  /** receiving more than this % above a PO line's expected kg needs a confirmation */
+  poOverPct: "10",
+  /** put in front of every new SKU the fabric repository makes (e.g. "FAB-") */
+  skuPrefix: "",
+  /** the bell flags rolls taken out for production longer than this */
+  takeOutAlertDays: "3",
 };
 export type Settings = typeof DEFAULT_SETTINGS;
 

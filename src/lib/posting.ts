@@ -9,6 +9,7 @@ import { getSettings } from "./settings";
 import { lock, writeAudit, nextCounter } from "./tx";
 import { rackOnLocationChange, rackOnKgChange, isRackedLocation } from "./warehouse";
 import { FMT, TO_PREFIX, pad3, MAX_ROLL_KG, REASONS, type AdjReason } from "./formats";
+import { serialOf, parseCode } from "./codes";
 
 const { rolls, fabricItems, locations, batches, transferOrders, toItems, toLines, orderLinks, adjustments, racks, serialRegistry } = schema;
 type Roll = typeof rolls.$inferSelect;
@@ -50,7 +51,7 @@ export async function peekNextTO(type: TOType) {
   const [c] = await db.select().from(schema.counters).where(eq(schema.counters.name, "to"));
   return TO_PREFIX[type] + pad3((c?.value ?? 0) + 1);
 }
-async function takeNumber(tx: Tx, type: TOType) { return TO_PREFIX[type] + pad3(await nextCounter(tx, "to")); }
+export async function takeNumber(tx: Tx, type: TOType) { return TO_PREFIX[type] + pad3(await nextCounter(tx, "to")); }
 
 /** Serial = <Fabric #>-<4 random digits>. Never issued twice: the registry keeps every serial ever given. */
 async function serialMaker(tx: Tx, fabricNo: string) {
@@ -71,38 +72,62 @@ async function serialMaker(tx: Tx, fabricNo: string) {
 // ---------------------------------------------------------------- receive a fabric PO
 
 export type ReceiveInput = {
-  fabricPO: string; date: string; locationId: string; weighedBy?: string; challan?: string; note?: string;
+  fabricPO: string; invoiceNo: string; date: string; locationId: string; challan?: string; note?: string;
+  /** the person confirmed receiving more than the PO line expects */
+  allowOver?: boolean;
   lines: { item: string; batch?: string; weights: string[] }[];
 };
 export type ReceiveResult =
-  | { ok: false; errors: string[] }
-  | { ok: true; po: string; location: string; rolls: number; kgG: number; batches: { fabricNo: string; fabric: string; colour: string; batch: string; serials: string[]; kgG: number }[] };
+  | { ok: false; errors: string[]; over?: { fabricNo: string; expectedG: number; afterG: number }[] }
+  | { ok: true; po: string; receipt: string; invoiceNo: string; location: string; rolls: number; kgG: number; batches: { fabricNo: string; fabric: string; colour: string; batch: string; serials: string[]; kgG: number }[] };
 
-/** Everything that arrived on one fabric PO. Everything is checked first; nothing is written unless every line is right. */
+/**
+ * One receiving against a fabric PO (a PO can be received in several parts). Every fabric is checked against the PO's
+ * lines first; nothing is written unless every line is right. Weighed by = the person signed in. Invoice # is required
+ * and goes on every roll (and into its barcode).
+ */
 export async function receivePO(u: CurrentUser, p: ReceiveInput): Promise<ReceiveResult> {
   if (!["ADMIN", "INVENTORY"].includes(u.role)) throw new UserError("Only Inventory or Admin receive fabric.");
+  const settings = await getSettings();
   return db.transaction(async (tx) => {
     await lock(tx);
     const errs: string[] = [];
     const po = String(p.fabricPO || "").trim().toUpperCase();
     if (!FMT.fabricPO.test(po)) errs.push("Fabric PO looks wrong. Use CT26/PO/48, CTF/PO/136 or PO-112.");
+    const invoiceNo = String(p.invoiceNo || "").trim().toUpperCase();
+    if (!invoiceNo) errs.push("Invoice # is required: type or scan the vendor's invoice number.");
+    else if (invoiceNo.length > 40 || /[|]/.test(invoiceNo)) errs.push("Invoice # is too long or has a | in it.");
     const date = String(p.date || todayIST());
     if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || date > todayIST()) errs.push("Date received must be today or earlier.");
     const locs = await allLocations(tx);
     const loc = locs.find((l) => l.id === p.locationId && l.active);
     if (!loc) errs.push("Pick the location the fabric arrived at.");
+    else if (u.receiveLocationId && loc.id !== u.receiveLocationId) errs.push(`Your login receives fabric only at ${locs.find((l) => l.id === u.receiveLocationId)?.name ?? "its own location"}.`);
     else if (!canPostLocation(u, loc.id)) errs.push(`You may not receive fabric at ${loc.name}.`);
     else if (isProd(loc)) errs.push(`${loc.name} is a production location. Receive fabric where it is stored.`);
+    // the PO must be registered (from Zoho / Carbonwork / typed in) so we know what it brings
+    const [head] = po ? await tx.select().from(schema.purchaseOrders).where(eq(schema.purchaseOrders.poNumber, po)) : [];
+    const poLines = head ? await tx.select().from(schema.poLines).where(eq(schema.poLines.poId, head.id)) : [];
+    if (po && FMT.fabricPO.test(po)) {
+      if (!head) errs.push(`PO ${po} isn't in Incoming POs, so the app doesn't know what it brings. Add it (or import it from Zoho / Carbonwork) first.`);
+      else if (head.status === "CLOSED") errs.push(`PO ${po} is closed. Reopen it under Incoming POs if more fabric came.`);
+    }
     const lines = (p.lines || []).filter((l) => String(l.item || "").trim() || (l.weights || []).some((w) => String(w).trim() !== ""));
     if (!lines.length) errs.push("Add at least one fabric with its roll weights.");
     const fabrics = await tx.select().from(fabricItems).where(eq(fabricItems.active, true));
+    const onPO = (id: string) => poLines.find((l) => l.fabricItemId === id);
+    const poList = () => poLines.map((l) => fabrics.find((f) => f.id === l.fabricItemId)?.fabricNo).filter(Boolean).join(", ");
     const plan: { f: Fabric; kgs: number[]; batch: string }[] = [];
+    const seen = new Set<string>();
     for (const [i, l] of lines.entries()) {
       const n = `Fabric ${i + 1}: `;
       const f = resolveFabric(fabrics, l.item);
       if (!f) { errs.push(`${n}no fabric "${String(l.item || "").trim()}" in Fabric Inventory. Use the Rajdanga Fabric # or the SKU.`); continue; }
       const fno = String(f.fabricNo ?? "");
       if (!FMT.fabricNo.test(fno)) { errs.push(`${n}Rajdanga Fabric # "${fno}" should be a number, optionally with letters after it (55, 55A, 55B). Fix it in Fabric Inventory.`); continue; }
+      if (head && !onPO(f.id)) { errs.push(`${n}PO ${po} has no ${fno}${f.sku ? ` (${f.sku})` : ""} to receive. This PO brings: ${poList() || "nothing yet"}.`); continue; }
+      if (seen.has(f.id)) { errs.push(`${n}${fno} is on two cards. Put all its rolls on one card.`); continue; }
+      seen.add(f.id);
       const raw = (l.weights || []).map((w) => String(w).trim()).filter((w) => w !== "");
       const bad = raw.filter((w) => !(toG(w) > 0));
       if (bad.length) { errs.push(`${n}these weights are not numbers above 0: ${bad.join(", ")}.`); continue; }
@@ -121,11 +146,25 @@ export async function receivePO(u: CurrentUser, p: ReceiveInput): Promise<Receiv
       plan.push({ f, kgs, batch });
     }
     if (errs.length) return { ok: false as const, errors: errs };
+    // more than the PO line expects? ask first
+    const over: { fabricNo: string; expectedG: number; afterG: number }[] = [];
+    if (head) for (const x of plan) {
+      const line = onPO(x.f.id)!;
+      const [{ g }] = (await tx.execute(sql`select coalesce(sum(weighed_g),0)::int g from rolls where fabric_po = ${po} and fabric_item_id = ${x.f.id} and split_from_id is null`)).rows as { g: number }[];
+      const after = g + x.kgs.reduce((a, b) => a + b, 0);
+      if (after > line.expectedG * (1 + Number(settings.poOverPct || 10) / 100)) over.push({ fabricNo: x.f.fabricNo!, expectedG: line.expectedG, afterG: after });
+    }
+    if (over.length && !p.allowOver) return { ok: false as const, over,
+      errors: over.map((o) => `${o.fabricNo}: this brings it to ${fmtKg(o.afterG, 1)} kg against ${fmtKg(o.expectedG, 1)} kg on the PO.`) };
 
+    const receiptNo = `GRN-${date.replaceAll("-", "").slice(2)}-${String(await nextCounter(tx, "receipt")).padStart(4, "0")}`;
+    const [rc] = await tx.insert(schema.receipts).values({ number: receiptNo, poId: head?.id ?? null, poNumber: po, invoiceNo, challan: p.challan?.trim() || null,
+      date, locationId: loc!.id, rolls: 0, kgG: 0, receivedBy: u.email }).returning();
     const nextSeq = new Map<string, number>();
     const results: Extract<ReceiveResult, { ok: true }>["batches"] = [];
     let total = 0, count = 0;
     const racked = await isRackedLocation(tx, loc!.id);
+    const weighedBy = u.name?.trim() || u.email;
     for (const x of plan) {
       const fabricNo = x.f.fabricNo!.toUpperCase().replace(/[^A-Z0-9-]/g, "");
       let batchRow: typeof batches.$inferSelect | undefined;
@@ -144,11 +183,11 @@ export async function receivePO(u: CurrentUser, p: ReceiveInput): Promise<Receiv
       const newSerial = await serialMaker(tx, fabricNo);
       const serials: string[] = [];
       for (const g of x.kgs) {
-        const serial = await newSerial(`Received on ${po}`);
+        const serial = await newSerial(`Received on ${po} (${receiptNo})`);
         await tx.insert(rolls).values({
           serial, batchId: batchRow.id, fabricItemId: x.f.id, fabricPO: po, registeredDate: date, registeredLocationId: loc!.id,
-          weighedG: g, weighedBy: p.weighedBy?.trim() || u.name || u.email, registeredBy: u.email, challan: p.challan?.trim() || null,
-          notes: p.note?.trim() || null, currentLocationId: loc!.id, remainingG: g, status: "AWAITING_LABEL", lastMovement: `Received on ${po}`,
+          weighedG: g, weighedBy, registeredBy: u.email, challan: p.challan?.trim() || null, invoiceNo, receiptId: rc.id,
+          notes: p.note?.trim() || null, currentLocationId: loc!.id, remainingG: g, status: "AWAITING_LABEL", lastMovement: `Received on ${po} · ${receiptNo}`,
           offRackReason: racked ? "NEW" : null,
         });
         serials.push(serial);
@@ -156,12 +195,13 @@ export async function receivePO(u: CurrentUser, p: ReceiveInput): Promise<Receiv
       }
       results.push({ fabricNo: x.f.fabricNo!, fabric: x.f.cwFabricCode ?? x.f.itemName, colour: x.f.colour ?? "", batch: batchRow.code, serials, kgG: x.kgs.reduce((a, b) => a + b, 0) });
     }
-    await writeAudit(tx, u, "RECEIVE_PO", "po", null, {
+    await tx.update(schema.receipts).set({ rolls: count, kgG: total }).where(eq(schema.receipts.id, rc.id));
+    await writeAudit(tx, u, "RECEIVE_PO", "po", head?.id ?? null, {
       rollSerials: results.flatMap((r) => r.serials).join(","), kgAfterG: total,
-      details: { po, location: loc!.name, date, challan: p.challan ?? "", batches: results.map((r) => [r.fabricNo, r.batch, r.serials.length, r.kgG]) },
+      details: { po, receipt: receiptNo, invoice: invoiceNo, location: loc!.name, date, challan: p.challan ?? "", over: over.length ? over : undefined, batches: results.map((r) => [r.fabricNo, r.batch, r.serials.length, r.kgG]) },
     });
     await tx.delete(schema.drafts).where(and(eq(schema.drafts.userId, u.id), eq(schema.drafts.kind, "RECEIVE")));
-    return { ok: true as const, po, location: loc!.name, rolls: count, kgG: total, batches: results };
+    return { ok: true as const, po, receipt: receiptNo, invoiceNo, location: loc!.name, rolls: count, kgG: total, batches: results };
   });
 }
 
@@ -185,7 +225,7 @@ export async function markLabelsPrinted(u: CurrentUser, rollIds: string[]) {
   });
 }
 export async function lookupForActivate(serialRaw: string) {
-  const serial = serialRaw.trim().toUpperCase();
+  const serial = serialOf(serialRaw);
   const [row] = await db.select({ r: rolls, f: fabricItems, b: batches, l: locations }).from(rolls)
     .innerJoin(fabricItems, eq(fabricItems.id, rolls.fabricItemId)).innerJoin(batches, eq(batches.id, rolls.batchId))
     .innerJoin(locations, eq(locations.id, rolls.currentLocationId)).where(eq(rolls.serial, serial));
@@ -199,7 +239,7 @@ export async function activateLabels(u: CurrentUser, serials: string[]) {
   if (!["ADMIN", "INVENTORY"].includes(u.role)) throw new UserError("Only Inventory or Admin activate labels.");
   return db.transaction(async (tx) => {
     await lock(tx);
-    const list = await tx.select().from(rolls).where(inArray(rolls.serial, serials.map((s) => s.trim().toUpperCase()))).for("update");
+    const list = await tx.select().from(rolls).where(inArray(rolls.serial, serials.map(serialOf))).for("update");
     const done: string[] = [];
     for (const r of list) {
       if (r.labelActivatedAt || r.status === "FINISHED") continue;
@@ -218,13 +258,22 @@ export type TOLineInput = { item: string; kg?: string | number; waste?: string |
 export type TOInput = {
   type: TOType; date: string; sourceId: string; destinationId: string; stylePO?: string; mo?: string; invoice?: string; reason?: string;
   lines: TOLineInput[];
+  /** an order number on this TROC was already used for the same fabric: "recut" adds _recut to it, "not-recut" keeps it */
+  recut?: "recut" | "not-recut";
+  /** internal: the planned TROR being dispatched (its picked rolls may be used) */
+  forTO?: string;
+  /** internal: planning a TROR (whole plan, nothing reserved yet) */
+  planning?: boolean;
 };
+export type Dup = { row: number; order: string; prevTO: string; suggestion: string };
 type Take = { roll: Roll; kgG: number; wasteG: number; cut: boolean; rack: string | null };
 export type RowPlan = {
   row: number; item: string; fabric: { id: string; fabricNo: string; label: string; sku: string | null } | null;
   haveG: number; waitingG: number; destG: number | null; needG: number; wasteG: number; pieces: number; orders: string[];
   takes: { serial: string; kgG: number; wasteG: number; cut: boolean; rack: string | null; rollLeftG: number; batch: string }[];
   error: string | null; scanned: boolean;
+  /** consumption: the scanned roll's invoice / batch / what it was taken out for */
+  roll?: { serial: string; invoice: string | null; batch: string; leftG: number; takenOutFor: string | null; purpose: string | null } | null;
 };
 
 /** Works out exactly which rolls an order takes (oldest first, or the scanned ones). Used for the live pick list and for posting. */
@@ -260,7 +309,7 @@ async function planTO(tx: Tx, u: CurrentUser, p: TOInput, forUpdate: boolean) {
     const rp: RowPlan = { row: i + 1, item: l.item, fabric: null, haveG: 0, waitingG: 0, destG: null, needG: 0, wasteG: 0, pieces: 0, orders: [], takes: [], error: null, scanned: !!l.serials?.length };
     plans.push(rp); takes.push([]);
     const fail = (m: string) => { rp.error = m; errs.push(n + m); };
-    const scanned = (l.serials ?? []).map((s) => s.trim().toUpperCase()).filter(Boolean);
+    const scanned = (l.serials ?? []).map(serialOf).filter(Boolean);
     let f = resolveFabric(fabrics, l.item);
     let scanRolls: Roll[] = [];
     if (scanned.length) {
@@ -273,6 +322,7 @@ async function planTO(tx: Tx, u: CurrentUser, p: TOInput, forUpdate: boolean) {
       const other = scanRolls.find((r) => r.fabricItemId !== f?.id);
       if (other) { fail(`${other.serial} is a different fabric from this row. Put it on its own row.`); continue; }
     }
+    if (type === "CONSUMPTION" && !scanned.length) { fail("scan the roll's barcode. A TROC uses the exact rolls taken out for production."); continue; }
     if (!f) { fail(`no fabric "${String(l.item || "").trim()}" in Fabric Inventory. Use the Rajdanga Fabric # or the SKU.`); continue; }
     rp.fabric = { id: f.id, fabricNo: f.fabricNo ?? "", label: `${f.cwFabricCode ?? f.itemName}${f.colour ? " · " + f.colour : ""}`, sku: f.sku };
     const wasteG = type === "CONSUMPTION" ? toG(l.waste || 0) : 0;
@@ -286,7 +336,7 @@ async function planTO(tx: Tx, u: CurrentUser, p: TOInput, forUpdate: boolean) {
       rp.pieces = pc > 0 ? pc : 0; rp.orders = pc > 0 ? ords : [];
     }
     if (!src) continue;
-    const poolQ = tx.select().from(rolls).where(and(eq(rolls.fabricItemId, f.id), eq(rolls.currentLocationId, src.id), eq(rolls.status, "IN_STOCK")))
+    const poolQ = tx.select().from(rolls).where(and(eq(rolls.fabricItemId, f.id), eq(rolls.currentLocationId, src.id), eq(rolls.status, "IN_STOCK"), sql`${rolls.takenOutAt} is null`))
       .orderBy(asc(rolls.registeredDate), asc(rolls.createdAt), asc(rolls.serial));
     const fifo = forUpdate ? await poolQ.for("update") : await poolQ;
     for (const r of fifo) if (!left.has(r.id)) left.set(r.id, r.remainingG);
@@ -302,17 +352,36 @@ async function planTO(tx: Tx, u: CurrentUser, p: TOInput, forUpdate: boolean) {
         if (r.status === "AWAITING_LABEL") { fail(`${r.serial}: label not activated yet — activate it or put it away first.`); break; }
         if (r.status === "FINISHED") { fail(`${r.serial} is finished (0 kg left).`); break; }
         if (r.currentLocationId !== src.id) { fail(`${r.serial} is at ${locs.find((x) => x.id === r.currentLocationId)?.name}, not ${src.name}.`); break; }
+        if (type === "CONSUMPTION" && !(r.takenOutAt && (r.takenOutPurpose === "PRODUCTION" || r.takenOutPurpose === "SAMPLING"))) {
+          fail(`${r.serial} hasn't been taken out for production. Take it out first (Warehouse → Take out for production), then make the TROC.`); break;
+        }
+        if (type === "TRANSFER" && r.takenOutAt && !(r.takenOutPurpose === "TROR" && r.takenOutFor === p.forTO)) {
+          fail(`${r.serial} is taken out for ${r.takenOutPurpose === "TROR" ? r.takenOutFor : `production (${r.takenOutFor ?? ""})`}.`); break;
+        }
         if (!left.has(r.id)) left.set(r.id, r.remainingG);
       }
       if (rp.error) continue;
       pool = scanRolls;
+      if (type === "CONSUMPTION" && scanRolls.length === 1) {
+        const r0 = scanRolls[0];
+        const [b0] = await tx.select({ c: batches.code }).from(batches).where(eq(batches.id, r0.batchId));
+        rp.roll = { serial: r0.serial, invoice: r0.invoiceNo, batch: b0?.c ?? "", leftG: r0.remainingG, takenOutFor: r0.takenOutFor, purpose: r0.takenOutPurpose };
+      }
     }
     let kgG = toG(l.kg ?? "");
     if (scanned.length && type === "TRANSFER" && !(kgG > 0)) kgG = pool.reduce((a, r) => a + Math.max(0, left.get(r.id)!), 0);
     rp.needG = Number.isNaN(kgG) ? 0 : kgG;
     if (!(kgG > 0)) { fail(type === "CONSUMPTION" ? "kg used must be above 0." : "transfer quantity must be above 0."); continue; }
     if (wasteG < 0 || Number.isNaN(wasteG)) { fail("waste can't be negative."); continue; }
-    const avail = pool.reduce((a, r) => a + Math.max(0, left.get(r.id)!), 0);
+    let avail = pool.reduce((a, r) => a + Math.max(0, left.get(r.id)!), 0);
+    if (p.planning && type === "TRANSFER") {
+      const [res] = (await tx.execute(sql`select coalesce(sum(i.kg_g),0)::int g from to_items i join transfer_orders t on t.id = i.to_id
+        where t.status = 'PLANNED' and t.source_location_id = ${src.id} and i.fabric_item_id = ${f.id}`)).rows as { g: number }[];
+      if (res.g > 0) {
+        avail -= res.g;
+        if (kgG > avail + TOL) { fail(`${f.fabricNo} has ${fmtKg(avail + res.g)} kg at ${src.name}, but ${fmtKg(res.g)} kg of it is already on other open TRORs. Free: ${fmtKg(Math.max(0, avail))} kg.`); continue; }
+      }
+    }
     if (kgG + wasteG > avail + TOL) {
       fail(scanned.length ? `the scanned rolls hold only ${fmtKg(avail)} kg.`
         : `${f.fabricNo} has only ${fmtKg(avail)} kg in stock at ${src.name}${rp.waitingG ? ` (${fmtKg(rp.waitingG, 1)} kg more is waiting for labels to be activated)` : ""}.`);
@@ -342,20 +411,41 @@ async function planTO(tx: Tx, u: CurrentUser, p: TOInput, forUpdate: boolean) {
       rp.takes.push({ serial: x.roll.serial, kgG: x.kgG, wasteG: x.wasteG, cut: x.cut, rack: x.rack, rollLeftG: left.get(x.roll.id)!, batch: batchCodes.get(x.roll.batchId)! });
     }
   }
-  return { type, errs, src, dst, stylePO, lines, plans, takes, batchCodes, fabrics };
+  // an order number already used for the same fabric on an earlier TROC: is this a recut?
+  const dups: Dup[] = [];
+  if (type === "CONSUMPTION") {
+    const wanted = plans.flatMap((rp) => rp.fabric ? rp.orders.map((o) => ({ row: rp.row, order: o.toUpperCase(), fno: rp.fabric!.fabricNo })) : []);
+    const bases = [...new Set(wanted.map((w) => w.order.replace(/_RECUT\d*$/, "")))];
+    if (bases.length) {
+      const prev = (await tx.execute(sql`select upper(o.order_number) ord, o.fabric_no, t.to_number from order_links o join transfer_orders t on t.id = o.to_id
+        where not o.reversed and (${sql.join(bases.map((b) => sql`upper(o.order_number) like ${b + "%"}`), sql` or `)})`)).rows as { ord: string; fabric_no: string; to_number: string }[];
+      const seen = new Set<string>();
+      for (const w of wanted) {
+        const hit = prev.find((x) => x.ord === w.order && x.fabric_no === w.fno);
+        if (!hit || seen.has(w.row + w.order)) continue;
+        seen.add(w.row + w.order);
+        const base = w.order.replace(/_RECUT\d*$/, "");
+        const usedNames = new Set(prev.filter((x) => x.fabric_no === w.fno).map((x) => x.ord));
+        let sug = `${base}_recut`;
+        for (let k = 2; usedNames.has(sug.toUpperCase()); k++) sug = `${base}_recut${k}`;
+        dups.push({ row: w.row, order: w.order, prevTO: hit.to_number, suggestion: sug });
+      }
+    }
+  }
+  return { type, errs, src, dst, stylePO, lines, plans, takes, batchCodes, fabrics, dups };
 }
 
 /** Live pick list for the order form (nothing is written). */
 export async function previewTO(u: CurrentUser, p: TOInput) {
   return db.transaction(async (tx) => {
     const r = await planTO(tx, u, p, false);
-    return { errors: r.errs, rows: r.plans, next: await peekNextTO(r.type) };
+    return { errors: r.errs, rows: r.plans, next: await peekNextTO(r.type), dups: r.dups };
   });
 }
 
-export type PostTOResult = { ok: false; errors: string[] } | { ok: true; to: string; lines: number; kgG: number; pieces: number; cuts: { from: string; piece: string; kgG: number }[]; next: string; pick: RowPlan[] };
+export type PostTOResult = { ok: false; errors: string[]; dups?: Dup[] } | { ok: true; to: string; lines: number; kgG: number; pieces: number; cuts: { from: string; piece: string; kgG: number }[]; next: string; pick: RowPlan[] };
 
-export async function postTO(u: CurrentUser, p: TOInput): Promise<PostTOResult> {
+export async function postTO(u: CurrentUser, p: TOInput, existing?: { id: string; toNumber: string }): Promise<PostTOResult> {
   const type: TOType = p.type === "CONSUMPTION" ? "CONSUMPTION" : "TRANSFER";
   if (type === "TRANSFER" && !["ADMIN", "INVENTORY"].includes(u.role)) throw new UserError("Only Inventory or Admin post transfer orders.");
   if (type === "CONSUMPTION" && !["ADMIN", "MERCHANDISER"].includes(u.role)) throw new UserError("Only Merchandisers or Admin post consumption orders.");
@@ -364,17 +454,37 @@ export async function postTO(u: CurrentUser, p: TOInput): Promise<PostTOResult> 
     await lock(tx);
     const errs0: string[] = [];
     if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || date > todayIST()) errs0.push("Date must be today or earlier.");
-    const plan = await planTO(tx, u, p, true);
+    const plan = await planTO(tx, u, { ...p, forTO: existing?.toNumber }, true);
     const errs = [...errs0, ...plan.errs];
     if (errs.length) return { ok: false as const, errors: errs };
+    if (plan.dups.length) {
+      if (!p.recut) return { ok: false as const, dups: plan.dups,
+        errors: plan.dups.map((d) => `Order ${d.order} already used ${plan.plans[d.row - 1]?.fabric?.fabricNo} on ${d.prevTO}. Is this a recut?`) };
+      if (p.recut === "recut") for (const d of plan.dups) {
+        const rp = plan.plans[d.row - 1];
+        rp.orders = rp.orders.map((o) => (o.toUpperCase() === d.order ? d.suggestion : o));
+      }
+    }
     const { src, dst, stylePO, plans, takes } = plan;
-    const to = await takeNumber(tx, type);
     const pieces = plans.reduce((a, r) => a + r.pieces, 0);
-    const [head] = await tx.insert(transferOrders).values({
-      toNumber: to, type, date, reason: p.reason?.trim().slice(0, 500) || null, sourceLocationId: src!.id, destLocationId: dst!.id,
+    const vals = {
+      type, date, reason: p.reason?.trim().slice(0, 500) || null, sourceLocationId: src!.id, destLocationId: dst!.id,
       destAddress: dst!.address, stylePO: stylePO || null, moNumber: p.mo?.trim() || null, taxInvoiceNo: p.invoice?.trim() || null,
       postedBy: u.email, piecesMade: pieces || null,
-    }).returning();
+    };
+    let to: string;
+    let head: typeof transferOrders.$inferSelect;
+    if (existing) {
+      const [cur] = await tx.select().from(transferOrders).where(eq(transferOrders.id, existing.id)).for("update");
+      if (!cur || cur.status !== "PLANNED") return { ok: false as const, errors: [`${existing.toNumber} is not waiting to be dispatched.`] };
+      to = cur.toNumber;
+      [head] = await tx.update(transferOrders).set({ ...vals, reason: vals.reason ?? cur.reason, moNumber: vals.moNumber ?? cur.moNumber, taxInvoiceNo: vals.taxInvoiceNo ?? cur.taxInvoiceNo,
+        status: "POSTED", postedAt: new Date() }).where(eq(transferOrders.id, cur.id)).returning();
+      await tx.delete(toItems).where(eq(toItems.toId, cur.id));
+    } else {
+      to = await takeNumber(tx, type);
+      [head] = await tx.insert(transferOrders).values({ toNumber: to, ...vals }).returning();
+    }
     const cuts: { from: string; piece: string; kgG: number }[] = [];
     let kgTotal = 0, nLines = 0;
     const current = new Map<string, Roll>();
@@ -394,7 +504,7 @@ export async function postTO(u: CurrentUser, p: TOInput): Promise<PostTOResult> 
           const [piece] = await tx.insert(rolls).values({
             serial, batchId: r.batchId, fabricItemId: r.fabricItemId, fabricPO: r.fabricPO, registeredDate: todayIST(), registeredLocationId: src!.id,
             weighedG: x.kgG, weighedBy: `Cut from ${r.serial}`, registeredBy: u.email, currentLocationId: dst!.id, remainingG: x.kgG,
-            status: "IN_STOCK", splitFromId: r.id, lastMovement: to, notes: `Cut piece on ${to}`,
+            status: "IN_STOCK", splitFromId: r.id, lastMovement: to, notes: `Cut piece on ${to}`, invoiceNo: r.invoiceNo, receiptId: r.receiptId,
           }).returning();
           const upd = { ...r, splitG: r.splitG + x.kgG };
           const rem = remOf(upd);
@@ -406,7 +516,7 @@ export async function postTO(u: CurrentUser, p: TOInput): Promise<PostTOResult> 
           cuts.push({ from: r.serial, piece: serial, kgG: x.kgG });
           rowSerials.push(serial);
         } else if (type === "TRANSFER") {
-          await tx.update(rolls).set({ currentLocationId: dst!.id, lastMovement: to }).where(eq(rolls.id, r.id));
+          await tx.update(rolls).set({ currentLocationId: dst!.id, lastMovement: to, takenOutAt: null, takenOutBy: null, takenOutPurpose: null, takenOutFor: null }).where(eq(rolls.id, r.id));
           await rackOnLocationChange(tx, u, r, src!.id, dst!.id, to);
           await tx.insert(toLines).values({ toId: head.id, rollId: r.id, batchCode: bc, fabricNo: fno, kgG: x.kgG, sourceBeforeG: sb, sourceAfterG: sb - x.kgG,
             destBeforeG: dbk, destAfterG: dbk + x.kgG, rollBeforeG: r.remainingG, rollAfterG: r.remainingG, itemRow: rp.row, rackCode: x.rack });
@@ -454,6 +564,7 @@ export async function reverseTO(u: CurrentUser, toNumberRaw: string, reasonRaw: 
     const toNo = toNumberRaw.trim().toUpperCase();
     const [to] = await tx.select().from(transferOrders).where(eq(transferOrders.toNumber, toNo)).for("update");
     if (!to) throw new UserError(`No posted TO ${toNo}.`);
+    if (to.status !== "POSTED") throw new UserError(`${toNo} hasn't been dispatched yet${to.status === "PLANNED" ? " — cancel the plan instead" : ""}.`);
     if (to.isReversal) {
       const [o] = await tx.select().from(transferOrders).where(eq(transferOrders.id, to.reversalOfId!));
       throw new UserError(`${toNo} is itself a reversal (of ${o?.toNumber}).`);
@@ -534,7 +645,7 @@ async function adjNumber(tx: Tx) {
 }
 export async function requestAdjustment(u: CurrentUser, input: { serial: string; kgChangeG: number; reason: AdjReason; note?: string; photoUrl?: string }) {
   if (!["ADMIN", "INVENTORY"].includes(u.role)) throw new UserError("Only Inventory or Admin can adjust.");
-  const serial = input.serial.trim().toUpperCase();
+  const serial = serialOf(input.serial);
   if (!Number.isInteger(input.kgChangeG) || input.kgChangeG === 0) throw new UserError("Kg change can't be 0.");
   if (!(input.reason in REASONS)) throw new UserError("Pick a reason.");
   const note = input.note?.trim() || "";
@@ -625,7 +736,8 @@ export async function rebuildRolls(u: CurrentUser) {
 // ---------------------------------------------------------------- find
 
 export async function findAnything(qRaw: string) {
-  const q = qRaw.trim().toUpperCase();
+  const pc = parseCode(qRaw);
+  const q = pc.kind === "roll" ? pc.serial : qRaw.trim().toUpperCase();
   if (!q) return { kind: "none" as const, q };
   const [roll] = await db.select({ s: rolls.serial }).from(rolls).where(eq(rolls.serial, q));
   if (roll) return { kind: "roll" as const, serial: roll.s };
@@ -679,7 +791,7 @@ const ZOHO_PROMPT_INTRO = [
 
 export async function zohoPrompt(input: string) {
   let nums = String(input || "").toUpperCase().split(/[\s,;]+/).map((x) => x.trim()).filter(Boolean);
-  const all = await db.select().from(transferOrders).orderBy(asc(transferOrders.postedAt));
+  const all = await db.select().from(transferOrders).where(eq(transferOrders.status, "POSTED")).orderBy(asc(transferOrders.postedAt));
   if (nums.length === 1 && nums[0] === "ALL") nums = all.filter((t) => !t.enteredInZoho).map((t) => t.toNumber);
   nums = [...new Set(nums)];
   const fabs = new Map((await db.select().from(fabricItems)).map((f) => [f.fabricNo ?? f.id, f]));

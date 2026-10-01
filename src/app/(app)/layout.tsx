@@ -18,6 +18,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
   const groups: NavGroup[] = [
     { id: "receive", theme: "receive" as const, title: "Receive", items: [
       ...when<NavItem>(NAV_ROLES.register, [{ href: "/receive", label: "Receive fabric", icon: "inbox", hint: "Weigh and register the rolls of a fabric PO" }]),
+      ...when<NavItem>(NAV_ROLES.pos, [{ href: "/pos", label: "Incoming POs", icon: "truck", hint: "What each fabric PO should bring (from Zoho / Carbonwork)" }]),
       ...when<NavItem>(NAV_ROLES.labels, [{ href: "/labels", label: "Print labels", icon: "tag", badge: att.labels }]),
       ...when<NavItem>(NAV_ROLES.activate, [
         { href: "/labels/activate", label: "Activate labels", icon: "scan", hint: "For rolls that are not going onto a Rajdanga rack" },
@@ -25,7 +26,9 @@ export default async function AppLayout({ children }: { children: React.ReactNod
       ]),
     ] },
     { id: "move", theme: "move" as const, title: "Move & use", items: [
-      ...when<NavItem>(NAV_ROLES.transfer, [{ href: "/to/transfer", label: "Send to a location", icon: "send", code: "TROR" }]),
+      ...when<NavItem>(NAV_ROLES.planTransfer, [{ href: "/to/transfer", label: "Plan a transfer", icon: "send", code: "TROR", hint: "Made in the office: number + PDF for the warehouse" }]),
+      ...when<NavItem>(NAV_ROLES.pick, [{ href: "/to/pick", label: "Pick a TROR", icon: "truck", badge: att.picks, hint: "Scan the TROR, then its rolls, then dispatch" }]),
+      ...when<NavItem>(NAV_ROLES.takeOut, [{ href: "/warehouse/takeout", label: "Take out for production", icon: "takeout", hint: "Before a TROC: the roll leaves its rack for cutting or sampling" }]),
       ...when<NavItem>(NAV_ROLES.consumption, [{ href: "/to/consumption", label: "Use in production", icon: "scissors", code: "TROC" }]),
       ...when<NavItem>(NAV_ROLES.activate, [{ href: "/warehouse/move", label: "Move between racks", icon: "move" }]),
       ...when<NavItem>(NAV_ROLES.adjust, [{ href: "/adjustments/new", label: "Adjust a roll", icon: "adjust", hint: "Weight is wrong, damage, found or lost" }]),
@@ -39,6 +42,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
     { id: "records", theme: "history" as const, title: "Stock & history", items: [
       { href: "/warehouse", label: "Rack map", icon: "map" } as NavItem,
       { href: "/rolls", label: "All rolls", icon: "roll" } as NavItem,
+      { href: "/invoices", label: "Invoices", icon: "invoice", hint: "Received, used and left per vendor invoice" } as NavItem,
       ...when<NavItem>(NAV_ROLES.log, [
         { href: "/log", label: "Transfer orders", icon: "list", hint: "Every TROR and TROC (the TO Log)" },
         { href: "/orders", label: "Customer orders", icon: "hash", hint: "Which order numbers used which fabric" },
@@ -50,6 +54,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
       ...(is(NAV_ROLES.masters) ? [] : [{ href: "/formats", label: "Number formats", icon: "ruler" } as NavItem]),
     ] },
     ...when<NavGroup>(NAV_ROLES.masters, [{ id: "setup", theme: "setup" as const, title: "SETUP", collapsed: true, items: [
+      { href: "/admin/fabric-groups", label: "Fabric repository", icon: "repo", hint: "Groups × colours, auto Fabric # and SKU" },
       { href: "/admin/fabrics", label: "Fabrics", icon: "fabric" },
       { href: "/admin/locations", label: "Locations", icon: "pin" },
       { href: "/admin/racks", label: "Racks", icon: "rack" },

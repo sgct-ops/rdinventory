@@ -15,6 +15,13 @@
       "when": 1790834937562,
       "tag": "0001_perf_indexes",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1790851756873,
+      "tag": "0002_flows_v2",
+      "breakpoints": true
     }
   ]
 }

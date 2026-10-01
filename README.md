@@ -12,8 +12,8 @@ It is the source of truth for fabric; Carbonwork is the check against it.
 ## Using the app (quick guide)
 
 - **Menu.** The menu has five colour-coded sections, laid out in the order the work happens:
-  1. **Receive** (blue): receive, print labels, activate labels, put away.
-  2. **Move & use** (green): TROR, TROC, move between racks, adjust a roll.
+  1. **Receive** (blue): receive, incoming POs, print labels, activate labels, put away.
+  2. **Move & use** (green): plan a TROR, pick a TROR, take out for production, TROC, move between racks, adjust a roll.
   3. **Check & approve** (purple): count a rack, approve adjustments, Carbonwork check, Zoho prompt.
   4. **Stock & history**.
   5. **Setup**.
@@ -28,6 +28,40 @@ It is the source of truth for fabric; Carbonwork is the check against it.
   - Search it (press /), click a column header to sort, and filter by values.
   - Choose which columns show. Kg totals update with your filters.
   - Download a CSV of exactly the rows you see, or click a row to open it.
+- **Barcode button.** Every box that takes a code has a barcode button (or press **F2** in it). Press it and the box lights up blue, ready for the USB scanner. The hint under it says which part of a code it wants.
+
+## Floor flows (v2)
+
+**Barcodes.** Roll labels carry `SERIAL|INVOICE|BATCH` in one Code 128 (e.g. `55A-0042|RSWM-0881|B-CT26PO48-55A-01`). Each scan box keeps only the part it needs, so one label works everywhere. Your pre-printed **SKU barcodes** (fabric group + colour) go in Fabric/SKU boxes; a roll label scanned into a fabric box (or an SKU into a roll box) is refused with a message. Test-print a few roll labels: the longer barcode is denser on the 75 mm label.
+
+**Receiving.**
+- The office loads what each fabric PO brings into **Incoming POs**: manually, by CSV (Zoho / Carbonwork exports), or automatically with `POST /api/sync/pos` + `Authorization: Bearer $PO_API_KEY`.
+- The receiver scans the PO, types the **invoice # (required)**, then scans each fabric's SKU barcode. A fabric that isn't on the PO turns red at once. Nothing is filled in for them.
+- *Weighed by* is the signed-in person. Each receiving gets a receipt number (GRN-…), and a PO can arrive in several parts with different invoices. Going over the PO by more than the setting (10%) asks for confirmation.
+- A login can be locked to one receiving location (Users → *Receives fabric only at*). `rajdanga@carbontree.com` is set to Rajdanga Storage.
+
+**Fabric repository** (Setup). Fabric group × colour = one item, and the colour is unique inside a group. The Fabric # and SKU are suggested as you type the colour; you can always type your own:
+- Single Jersey takes the next number (55).
+- The same colour in the paired Rib group ("Fabric 8D2" ↔ "Fabric 8D2 Rib") takes 55B. A Rib added first gives the Single Jersey the plain number later.
+- Other letters (55A, 55C …) are manual.
+
+**Take out → TROC.**
+- Before cutting, the warehouse takes rolls out on **Take out for production** (production with a style PO, or sampling). The oldest rolls are listed first; tap one to see its rack and room. Picking a newer roll asks "oldest first?".
+- The roll leaves its rack and shows as *taken out*.
+- The TROC is made by scanning those roll labels, one row per roll; the invoice and batch come with each roll.
+- If an order number was already used for the same fabric on an earlier TROC, a popup asks whether it's a recut. Yes saves it as `#CT10231_recut` (then `_recut2` …).
+
+**TROR (office → warehouse, no double logging).**
+1. *Plan* — the office makes the TROR (Plan a transfer). It gets its number and a PDF with a barcode and the oldest rolls suggested. No stock moves, and the kg are reserved against other open TRORs.
+2. *Pick* — the warehouse scans the TROR barcode on **Pick a TROR**, then each roll as it leaves the rack. Every scan is checked:
+   - the right fabric is on the TROR (any batch is fine);
+   - the row still needs kg;
+   - the roll is at the source, in stock, and not taken out elsewhere.
+   A roll bigger than what's left asks *cut or send whole*. Picked rolls are locked to the TROR.
+3. *Dispatch* — stock moves once, under the same TROR number. A short dispatch needs a reason; cancel releases the rolls.
+
+**Invoices** (Stock & history). For every vendor invoice: received, used (TROC), sent, left and where it is, with its rolls and movements.
+
 - **Speed.** `npm run local -- --fast` builds the app once (about a minute) and then serves it like the live site, so pages open in well under a second. Plain `npm run local` is for changing code.
 
 ## Neon
@@ -142,9 +176,17 @@ Still for you to decide: which merchandisers get which style POs and locations (
 
 ## 8. Tests
 
-- `tests/e2e-flows.mjs`: 51 end-to-end checks in a real browser on the demo data: every page; receive a PO with two fabrics; 80 kg limit; put away activates labels; transfer with a cut piece and the live pick list; production rules; consumption with order numbers per row; bad style PO; undo takes the next number; find; Zoho prompt; permissions; health re-derivation; remove and reload demo.
+- `tests/e2e-flows.mjs`: 86 end-to-end checks in a real browser on the demo data: every page; receive against a known PO (invoice required, wrong fabric flagged, GRN, Rajdanga-only login); full roll barcodes in scan boxes; TROR plan → scan → pick with a cut → dispatch under one number; take out FIFO + locator; TROC by roll with the recut popup; invoice page; undo; find; Zoho prompt; permissions; health re-derivation; remove and reload demo.
+- `tests/repo-check.ts`: the fabric repository numbering rules (55 / 55B, unique colours, manual numbers).
   Run it with `DATABASE_URL=... node tests/e2e-flows.mjs` (needs `npm i -D playwright pg` and the server running with `DEV_LOGIN=true`).
 - Every morning the health check re-works out every roll's kg and location from the logs (including cut pieces) and flags any mismatch in red.
 
-## 9. Later option (from the plan)
+## 9. Keeping secrets out of GitHub
+
+- Real values live only in `.env` (git-ignored) and in Vercel / Neon settings. `.env.example` has empty placeholders.
+- `npm install` turns on a **pre-commit hook** (`.githooks/pre-commit` → `scripts/check-secrets.mjs`). It stops a commit that contains a database URL with a password, Google/Neon/GitHub/AWS/AI keys, private keys, or `.env` / `.neon` / `.zip` files.
+- `npm run check:secrets` checks every tracked file. GitHub runs the same check plus TruffleHog on every push (`.github/workflows/secret-scan.yml`).
+- If a secret ever gets pushed: rotate it first (new Neon password, new Google client secret, `npx auth secret`), then clean the history.
+
+## 10. Later option (from the plan)
 Create the TO and adjustment in Zoho Inventory through Zoho's API when you post here. That removes the double entry and keeps the TRO number identical. All posting goes through `src/lib/posting.ts`, so it's one hook to add once the Zoho API connection is set up.

@@ -22,9 +22,9 @@ export default async function Dashboard({ searchParams }: { searchParams: Promis
     (select count(*)::int from rolls where status='IN_STOCK') as rolls,
     (select count(*)::int from rolls where status='AWAITING_LABEL') as awaiting,
     (select count(*)::int from adjustments where status='PENDING') as pending,
-    (select count(*)::int from transfer_orders where not entered_in_zoho) as not_zoho,
+    (select count(*)::int from transfer_orders where not entered_in_zoho and status = 'POSTED') as not_zoho,
     (select coalesce(sum(i.pieces),0)::int from to_items i join transfer_orders t on t.id=i.to_id where t.type='CONSUMPTION' and not exists (select 1 from transfer_orders x where x.reversal_of_id=t.id) and t.date >= (now() at time zone 'Asia/Kolkata')::date - 30) as pieces,
-    (select count(*)::int from rolls r where r.rack_id is null and r.status <> 'FINISHED' and r.current_location_id in (select location_id from racks where active)) as unplaced`),
+    (select count(*)::int from rolls r where r.rack_id is null and r.taken_out_at is null and r.status <> 'FINISHED' and r.current_location_id in (select location_id from racks where active)) as unplaced`),
     db.execute(sql`
     select f.fabric_no, f.sku, coalesce(nullif(f.group_name,''), f.cw_fabric_code) grp, f.cw_fabric_code fabric, f.colour, l.name loc, sum(r.remaining_g)::int g, count(*)::int n
     from rolls r join fabric_items f on f.id=r.fabric_item_id join locations l on l.id=r.current_location_id

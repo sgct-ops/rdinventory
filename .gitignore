@@ -9,3 +9,12 @@ next-env.d.ts
 .neon
 rajdanga-fabric.zip
 _to_delete/
+# secrets: real values only in .env / Vercel / Neon
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+*.zip
+.claude/settings.local.json

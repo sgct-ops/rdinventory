@@ -9,6 +9,8 @@ export type CurrentUser = {
   allStylePOs: boolean;
   locationIds: string[];
   stylePOCodes: string[];
+  /** this person receives fabric only here (e.g. the Rajdanga login → Rajdanga Storage) */
+  receiveLocationId?: string | null;
 };
 export const canPostLocation = (u: CurrentUser, locationId: string) => u.allLocations || u.locationIds.includes(locationId);
 /** Style POs are prefixes: CT26/PO/8 allows CT26/PO/8, /80, /88 … */

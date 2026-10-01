@@ -188,7 +188,7 @@ export async function saveUserAction(_: unknown, fd: FormData) {
     if (id === u.id && !active) throw new UserError("You can't deactivate yourself.");
     const prefixes = s(fd.get("stylePOPrefixes")).split(/[,;\n]/).map((x) => x.trim().toUpperCase()).filter(Boolean);
     const values = { email, name: orNull(fd.get("name")), role, active, allLocations: fd.get("allLocations") === "on", allStylePOs: fd.get("allStylePOs") === "on",
-      stylePOPrefixes: prefixes.join(", ") || null };
+      stylePOPrefixes: prefixes.join(", ") || null, receiveLocationId: s(fd.get("receiveLocationId")) || null };
     const locIds = fd.getAll("locationIds").map(String);
     await db.transaction(async (tx) => {
       let userId = id;

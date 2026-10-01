@@ -25,6 +25,7 @@ export const getCurrentUser = cache(async (): Promise<CurrentUser | null> => {
     allStylePOs: admin || u.allStylePOs,
     locationIds: locs.map((l) => l.id),
     stylePOCodes: (u.stylePOPrefixes ?? "").split(/[,;\n]/).map((s) => s.trim()).filter(Boolean),
+    receiveLocationId: u.receiveLocationId,
   };
 });
 
@@ -47,6 +48,12 @@ export async function actionUser(roles?: Role[]) {
 
 export const NAV_ROLES = {
   transfer: ["ADMIN", "INVENTORY"] as Role[],
+  /** office makes the TROR; the warehouse picks and dispatches it */
+  planTransfer: ["ADMIN", "INVENTORY", "MERCHANDISER"] as Role[],
+  pick: ["ADMIN", "INVENTORY"] as Role[],
+  takeOut: ["ADMIN", "INVENTORY"] as Role[],
+  pos: ["ADMIN", "INVENTORY", "MERCHANDISER", "VIEWER"] as Role[],
+  editPOs: ["ADMIN", "INVENTORY"] as Role[],
   consumption: ["ADMIN", "MERCHANDISER"] as Role[],
   register: ["ADMIN", "INVENTORY"] as Role[],
   labels: ["ADMIN"] as Role[],

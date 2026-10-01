@@ -12,7 +12,7 @@ import { NAV_ROLES, type Role } from "@/lib/session";
  * - Narrow it with a prefix:  roll: fab: to: rack: order: (or #)  po: style: batch: loc: adj:
  * - Roll filters you can add:  kg>20  kg<5  at:Exim  in:stock | in:awaiting | in:finished
  */
-export type Kind = "fabric" | "roll" | "rack" | "to" | "order" | "po" | "style" | "batch" | "location" | "adjustment";
+export type Kind = "fabric" | "roll" | "rack" | "to" | "order" | "po" | "style" | "batch" | "location" | "adjustment" | "invoice";
 export type Hit = {
   kind: Kind; id: string; title: string; subtitle?: string; meta?: string; href: string;
   badge?: { text: string; tone: "ok" | "warn" | "bad" | "muted" | "info" };
@@ -22,11 +22,11 @@ export type SearchResult = { q: string; scope: Kind | "all"; filters: string[]; 
 
 export const KIND_LABEL: Record<Kind, string> = {
   fabric: "Fabrics", roll: "Rolls", rack: "Racks", to: "Transfer orders", order: "Customer orders",
-  po: "Fabric POs", style: "Style POs", batch: "Batches", location: "Locations", adjustment: "Adjustments",
+  po: "Fabric POs", style: "Style POs", batch: "Batches", location: "Locations", adjustment: "Adjustments", invoice: "Invoices",
 };
 const PREFIX: Record<string, Kind> = {
   roll: "roll", rolls: "roll", serial: "roll", fab: "fabric", fabric: "fabric", sku: "fabric", to: "to", tro: "to", tror: "to", troc: "to",
-  rack: "rack", order: "order", po: "po", style: "style", batch: "batch", loc: "location", location: "location", adj: "adjustment",
+  rack: "rack", order: "order", po: "po", inv: "invoice", invoice: "invoice", style: "style", batch: "batch", loc: "location", location: "location", adj: "adjustment",
 };
 const KG = (g: number) => (g / 1000).toLocaleString("en-IN", { maximumFractionDigits: 1 });
 const date = (d: string | Date | null) => { if (!d) return ""; const s = d instanceof Date ? d.toISOString() : String(d); const [y, m, x] = s.slice(0, 10).split("-"); return `${x}-${m}-${y}`; };
@@ -134,7 +134,7 @@ export async function searchAll(raw: string, role: Role, opts: { per?: number; s
   if (want("to") && canLog && n) run("to", async () => {
     const num = /^\d+$/.test(n) ? String(Number(n)) : null;
     const rows = (await db.execute(sql`
-      select t.id, t.to_number, t.type, t.date, t.style_po, t.mo_number, t.tax_invoice_no, t.is_reversal, t.entered_in_zoho, t.pieces_made, t.posted_by,
+      select t.id, t.to_number, t.type, t.date, t.style_po, t.mo_number, t.tax_invoice_no, t.is_reversal, t.entered_in_zoho, t.pieces_made, t.posted_by, t.status,
         s.name src, d.name dst, coalesce((select sum(kg_g) from to_lines x where x.to_id = t.id),0)::int g,
         (select count(*) from to_lines x where x.to_id = t.id)::int lines,
         case when ${N(sql`t.to_number`)} = ${n} or regexp_replace(t.to_number, '^TRO[CR]-0*', '') = ${num ?? "-"} then 0 when ${N(sql`t.to_number`)} like ${n + "%"} then 1 else 2 end rk
@@ -143,9 +143,9 @@ export async function searchAll(raw: string, role: Role, opts: { per?: number; s
          or ${N(sql`t.style_po`)} like ${like} or ${N(sql`t.mo_number`)} like ${like} or ${N(sql`t.tax_invoice_no`)} like ${like}
       order by rk, t.posted_at desc limit ${lim}`)).rows as any[];
     return rows.map((r) => ({
-      kind: "to", id: r.id, href: `/log/${r.id}`, exact: r.rk === 0, title: r.to_number,
+      kind: "to", id: r.id, href: r.status === "PLANNED" ? `/to/pick/${r.id}` : `/log/${r.id}`, exact: r.rk === 0, title: r.to_number,
       subtitle: `${r.type === "TRANSFER" ? "Transfer" : "Consumption"} · ${r.src} → ${r.dst}`, meta: `${KG(r.g)} kg · ${date(r.date)}`,
-      badge: r.is_reversal ? { text: "reversal", tone: "muted" } : !r.entered_in_zoho ? { text: "not in Zoho", tone: "warn" } : { text: "in Zoho", tone: "ok" },
+      badge: r.status === "PLANNED" ? { text: "waiting to pick", tone: "info" } : r.status === "CANCELLED" ? { text: "cancelled", tone: "muted" } : r.is_reversal ? { text: "reversal", tone: "muted" } : !r.entered_in_zoho ? { text: "not in Zoho", tone: "warn" } : { text: "in Zoho", tone: "ok" },
       detail: [["Date", date(r.date)], ["From", r.src], ["To", r.dst], ["Kg", KG(r.g)], ["Lines", String(r.lines)], ...(r.style_po ? [["Style PO", r.style_po] as [string, string]] : []),
         ...(r.pieces_made ? [["Pieces", String(r.pieces_made)] as [string, string]] : []), ...(r.mo_number ? [["MO #", r.mo_number] as [string, string]] : []), ["Posted by", r.posted_by]],
     }));
@@ -204,6 +204,16 @@ export async function searchAll(raw: string, role: Role, opts: { per?: number; s
     return rows.map((r) => ({ kind: "location", id: r.id, href: `/rolls?q=${encodeURIComponent(r.name)}`, exact: r.rk === 0, title: r.name, subtitle: r.type.charAt(0) + r.type.slice(1).toLowerCase(), meta: `${r.n} rolls · ${KG(r.g)} kg` }));
   });
 
+  if (want("invoice") && n) run("invoice", async () => {
+    const rows = (await db.execute(sql`
+      select r.invoice_no inv, string_agg(distinct r.fabric_po, ', ') pos, count(*) filter (where r.split_from_id is null)::int n,
+        coalesce(sum(r.weighed_g) filter (where r.split_from_id is null),0)::int g, coalesce(sum(r.remaining_g) filter (where r.status <> 'FINISHED'),0)::int left_g,
+        min(${rank(N(sql`r.invoice_no`), n)}) rk
+      from rolls r where r.invoice_no is not null and ${N(sql`r.invoice_no`)} like ${like} group by r.invoice_no order by rk, inv limit ${lim}`)).rows as any[];
+    return rows.map((r) => ({ kind: "invoice", id: r.inv, href: `/invoices/${encodeURIComponent(r.inv)}`, exact: r.rk === 0, title: r.inv, subtitle: `Invoice · ${r.pos}`,
+      meta: `${r.n} rolls · ${KG(r.left_g)} of ${KG(r.g)} kg left`, detail: [["Fabric PO", r.pos], ["Rolls", String(r.n)], ["Received", `${KG(r.g)} kg`], ["Left", `${KG(r.left_g)} kg`]] as [string, string][] }));
+  });
+
   if (want("adjustment") && n && role !== "VIEWER") run("adjustment", async () => {
     const rows = (await db.execute(sql`
       select a.number, a.kg_change_g, a.status, a.reason, r.serial, ${rank(N(sql`a.number`), n)} rk
@@ -213,7 +223,7 @@ export async function searchAll(raw: string, role: Role, opts: { per?: number; s
   });
 
   const out = await Promise.all(jobs);
-  const order: Kind[] = ["roll", "to", "rack", "order", "fabric", "batch", "po", "style", "location", "adjustment"];
+  const order: Kind[] = ["roll", "to", "rack", "order", "fabric", "invoice", "batch", "po", "style", "location", "adjustment"];
   // exact matches float their group to the top
   const groups = out.filter((g) => g.hits.length)
     .sort((a, b) => (Number(!a.hits[0]?.exact) - Number(!b.hits[0]?.exact)) || order.indexOf(a.kind) - order.indexOf(b.kind))

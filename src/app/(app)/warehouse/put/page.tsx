@@ -5,7 +5,7 @@ import { PutAway } from "@/components/warehouse/PutAway";
 export default async function Page() {
   await pageUser(NAV_ROLES.activate);
   const d = await warehouseData();
-  const waiting = d.rolls.filter((r) => !r.rackId).map((r) => ({
+  const waiting = d.rolls.filter((r) => !r.rackId && r.offRackReason !== "TAKEN_OUT").map((r) => ({
     serial: r.serial, hex: r.hex,
     why: r.status === "AWAITING_LABEL" ? "New · label" : r.offRackReason === "RETURNED" ? "Back" : r.offRackReason === "ARRIVED" ? "Arrived" : "New",
   }));
