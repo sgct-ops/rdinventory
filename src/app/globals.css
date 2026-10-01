@@ -1,0 +1,49 @@
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "IBM Plex Sans", system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, monospace;
+  --color-ink: #1c1b19;
+  --color-paper: #f6f5f2;
+  --color-line: #e4e1da;
+  --color-line2: #f1eee9;
+  --color-muted: #6d6a63;
+  --color-faint: #9a968d;
+  --color-chip: #ecebe6;
+  --color-ok: oklch(0.62 0.12 150);
+  --color-okbg: oklch(0.95 0.03 150);
+  --color-warn: oklch(0.8 0.13 80);
+  --color-warnbg: oklch(0.97 0.03 85);
+  --color-bad: oklch(0.58 0.17 28);
+  --color-badbg: oklch(0.95 0.03 28);
+  --color-accent: oklch(0.6 0.16 45);
+  --color-accentbg: oklch(0.97 0.03 60);
+}
+
+body { background: var(--color-paper); color: var(--color-ink); font-family: var(--font-sans); }
+a:hover { color: oklch(0.55 0.15 45); }
+
+@layer components {
+  .card { @apply bg-white border border-line rounded-[10px]; }
+  .btn { @apply inline-flex items-center justify-center gap-2 h-11 px-4 rounded-[7px] bg-ink text-white text-sm font-semibold cursor-pointer whitespace-nowrap disabled:opacity-40 disabled:cursor-not-allowed hover:bg-black; }
+  .btn-ghost { @apply inline-flex items-center justify-center gap-2 h-11 px-4 rounded-[7px] border border-[#d6d2c9] bg-white text-sm cursor-pointer whitespace-nowrap hover:bg-[#faf9f6] disabled:opacity-40; }
+  .btn-sm { @apply h-8 px-3 text-xs; }
+  .btn-danger { @apply inline-flex items-center justify-center h-8 px-3 rounded-[7px] border border-bad text-bad text-xs cursor-pointer bg-white hover:bg-badbg; }
+  .input { @apply h-11 w-full px-3 rounded-[9px] border border-[#d6d2c9] bg-white text-[15px] outline-none focus:border-ink focus:ring-2 focus:ring-black/5; }
+  .step { @apply inline-grid place-items-center w-6 h-6 rounded-lg bg-okbg text-ok text-xs font-bold mr-2; }
+  .label { @apply block text-xs text-muted mb-1; }
+  .mono { font-family: var(--font-mono); }
+  .h1 { @apply text-[22px] font-semibold; }
+  .sub { @apply text-[13px] text-muted mt-0.5; }
+  .kicker { @apply text-[11px] font-medium tracking-[.08em] text-muted; font-family: var(--font-mono); }
+  .tbl { @apply w-full text-[13px]; }
+  .tbl th { @apply text-left font-medium text-[11px] text-muted px-3 py-2.5 border-b border-line whitespace-nowrap; font-family: var(--font-mono); }
+  .tbl td { @apply px-3 py-2.5 border-b border-line2 align-middle; }
+  .tbl tr:hover td { @apply bg-[#faf9f6]; }
+  .pill { @apply inline-block text-xs px-2 py-0.5 rounded-[10px] whitespace-nowrap; }
+  .scanbox { @apply flex items-center gap-2.5 h-12 px-3.5 border-[1.5px] border-ink rounded-lg bg-white; }
+  .scanbox input { @apply flex-1 border-0 bg-transparent outline-none text-[15px] font-medium min-w-0; font-family: var(--font-mono); }
+}
+
+@keyframes ring { 0%,100% { transform: rotate(0) } 10%,30% { transform: rotate(14deg) } 20%,40% { transform: rotate(-14deg) } 50% { transform: rotate(0) } }
+@keyframes slidein { from { transform: translateX(-12px); opacity: 0 } to { transform: none; opacity: 1 } }
